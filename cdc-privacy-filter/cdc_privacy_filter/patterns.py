@@ -63,6 +63,29 @@ ACCOUNT_NO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Dashed/slashed numeric dates, e.g. 01-08-2025, 31-08-2025, 04-08-2025,
+# 10/08/2025. Must be claimed as DATE *before* ACCOUNT_NO_RE's bare-digit
+# fallback gets a chance at them: a DD-MM-YYYY date has the exact same
+# "digit groups joined by dashes" shape as an account number, so without
+# this pattern running first, dates get mislabeled as ACCOUNT_NO (not a
+# leak — still masked — but wrong, confusing category). It also closes a
+# real partial-leak gap: a date immediately followed by punctuation (e.g.
+# "31-08-2025.") falls through ACCOUNT_NO_RE's own lookahead guard and
+# used to fall to the free-text model instead, which can split the date
+# across BPE token boundaries and leave a trailing fragment (e.g. the
+# bare year "2025") unmasked. Claiming the whole date deterministically
+# here removes that dependency on the model's span boundaries entirely.
+# No extra lookaround needed to guard against a longer composite ID (e.g.
+# the SNTN format 17-00-9805-173-46) containing a same-shaped date-like
+# run: NTN_RE/CNIC_RE/IBAN_RE run before this in STRUCTURED_PATTERNS and
+# claim their own spans first, and filter.py's overlap-skip logic (not
+# this regex) is what keeps DATE_RE from double-claiming inside them. An
+# earlier version added lookarounds here to be extra careful, but they
+# backfired on a real document where a date followed an unrelated
+# "/1.0/" version stamp (DP-LST-0001/1.0/15-02-2017) — the lookbehind
+# mistook that for "part of a longer chain" and blocked a genuine date.
+DATE_RE = re.compile(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{4}\b")
+
 # Local mobile / landline numbers, e.g. 0300-1234567, 03001234567, 021-32413822
 PHONE_RE = re.compile(r"\b0\d{2,4}-?\d{6,9}\b")
 
@@ -125,6 +148,7 @@ STRUCTURED_PATTERNS = [
     ("IBAN", IBAN_RE),
     ("NTN", NTN_RE),
     ("CNIC", CNIC_RE),
+    ("DATE", DATE_RE),
     ("ACCOUNT_NO", ACCOUNT_NO_RE),
     ("EMAIL", EMAIL_RE),
     ("URL", URL_RE),

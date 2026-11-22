@@ -95,6 +95,46 @@ def test_account_no_dashed_format():
     assert pf.deredact(redacted) == ABHI_EXCERPT
 
 
+DATE_EXCERPT = """
+With Reference that the following details are Brokerage, WHT & SST on
+Ready the Trade for the Dedicated Stock Fund(DSF) from 01-08-2025 to
+31-08-2025.
+"""
+
+VERSION_STAMP_EXCERPT = "Form ref: DP-LST-0001/1.0/15-02-2017\nStatement From: 01-Jun-2026"
+
+
+def test_dashed_dates_are_categorised_as_date_not_account_no():
+    """Found via real-corpus smoke testing: a DD-MM-YYYY date has the
+    same 'digit groups joined by dashes' shape as ACCOUNT_NO_RE's
+    bare-digit fallback, so without a dedicated DATE_RE claiming it
+    first, dates get masked but mislabeled as account numbers — and a
+    date immediately followed by punctuation (e.g. '31-08-2025.') used
+    to fall through to the free-text model instead, which can split a
+    date across token boundaries and leak a trailing fragment like the
+    bare year."""
+    pf = _fresh_filter()
+    redacted = pf.redact(DATE_EXCERPT)
+    assert "01-08-2025" not in redacted
+    assert "31-08-2025" not in redacted
+    assert redacted.count("[DATE_") == 2
+    assert "[ACCOUNT_NO_" not in redacted
+    assert pf.deredact(redacted) == DATE_EXCERPT
+
+
+def test_date_after_unrelated_version_stamp_still_caught():
+    """A date can appear right after an unrelated slash-separated
+    version/form-reference stamp (e.g. 'DP-LST-0001/1.0/15-02-2017',
+    seen in a real bank statement) — DATE_RE must not be guarded so
+    tightly against 'looks like part of a longer chain' that it misses
+    this real, standalone date."""
+    pf = _fresh_filter()
+    redacted = pf.redact(VERSION_STAMP_EXCERPT)
+    assert "15-02-2017" not in redacted
+    assert "[DATE_" in redacted
+    assert pf.deredact(redacted) == VERSION_STAMP_EXCERPT
+
+
 def test_company_email_and_website_redacted():
     """Layer 2 masks organizational contact info too — unlike Layer 1
     (the model), which deliberately leaves it alone since it's scoped
