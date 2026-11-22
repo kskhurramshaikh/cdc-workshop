@@ -9,5 +9,12 @@ description = "CDC Privacy Filter by Blockverse — local Pakistani-financial PI
 requires-python = ">=3.10"
 readme = "README.md"
 
+# Core package has zero dependencies (regex layer only). The real-model
+# Layer 1 (OpenAI Privacy Filter) is an optional extra so the regex layer
+# stays installable/testable without pulling in torch/transformers:
+#   pip install -e ".[model]"
+[project.optional-dependencies]
+model = ["torch", "transformers>=4.57", "accelerate", "safetensors"]
+
 [tool.setuptools.packages.find]
 include = ["cdc_privacy_filter*"]

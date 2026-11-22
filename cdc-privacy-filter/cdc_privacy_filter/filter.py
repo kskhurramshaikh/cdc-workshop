@@ -38,8 +38,12 @@ class PrivacyFilter:
             for m in pattern.finditer(text):
                 if category == "ACCOUNT_NO":
                     # Only pseudonymise the captured digit/dash run, not
-                    # the "Account No:" label itself.
-                    start, end = m.start(1), m.end(1)
+                    # the "Account No:" label itself. ACCOUNT_NO_RE has
+                    # two alternatives (labeled form -> group 1,
+                    # label-free bare-digit fallback -> group 2); use
+                    # whichever one actually matched.
+                    g = 1 if m.group(1) is not None else 2
+                    start, end = m.start(g), m.end(g)
                 else:
                     start, end = m.start(), m.end()
                 if overlaps(start, end):

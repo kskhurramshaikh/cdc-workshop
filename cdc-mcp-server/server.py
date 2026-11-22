@@ -16,6 +16,7 @@ unchanged.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +24,12 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cdc-privacy-filter"))
-from cdc_privacy_filter import ContextMap, PrivacyFilter  # noqa: E402
+from cdc_privacy_filter import (  # noqa: E402
+    ContextMap,
+    NoOpModelBackend,
+    PrivacyFilter,
+    default_model_backend,
+)
 
 from pdf_extract import extract_text  # noqa: E402
 
@@ -41,7 +47,26 @@ UC2_OUT.mkdir(parents=True, exist_ok=True)
 # every document and tool call in a session, and this is the only place
 # the real<->pseudonym mapping lives.
 _context_map = ContextMap()
-_privacy_filter = PrivacyFilter(context_map=_context_map)
+
+# Two-layer privacy filter:
+#   Layer 1 (model_backend) — OpenAI Privacy Filter, a general local PII
+#   model: catches free-text names/addresses/emails/phones/urls/dates that
+#   a fixed regex can't fully enumerate. Loaded once at process startup
+#   (first import of this module), not per-request.
+#   Layer 2 (patterns.py, inside PrivacyFilter) — deterministic regex for
+#   Pakistan-specific structured identifiers (IBAN, NTN, CNIC, account
+#   numbers, known fund/broker names) the general model was never trained
+#   to recognise as such.
+# Set CDC_DISABLE_PII_MODEL=1 to skip loading Layer 1 (e.g. for a quick
+# regex-only smoke test, or a machine without torch/transformers) — Layer
+# 2 keeps working on its own either way.
+if os.environ.get("CDC_DISABLE_PII_MODEL") == "1":
+    _model_backend = NoOpModelBackend()
+    print("[cdc-mcp-server] CDC_DISABLE_PII_MODEL=1 — Layer 1 (model) skipped, regex-only.", file=sys.stderr)
+else:
+    _model_backend = default_model_backend()
+
+_privacy_filter = PrivacyFilter(context_map=_context_map, model_backend=_model_backend)
 
 mcp = FastMCP("cdc-workshop")
 

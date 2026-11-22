@@ -20,13 +20,21 @@ Typical usage (inside the MCP server, never inside Claude's context):
 
 from .context_map import ContextMap
 from .filter import PrivacyFilter
-from .model_backend import ModelBackend, NoOpModelBackend, Span
+from .model_backend import (
+    ModelBackend,
+    NoOpModelBackend,
+    OpenAIPrivacyFilterBackend,
+    Span,
+    default_model_backend,
+)
 
 __all__ = [
     "ContextMap",
     "PrivacyFilter",
     "ModelBackend",
     "NoOpModelBackend",
+    "OpenAIPrivacyFilterBackend",
+    "default_model_backend",
     "Span",
 ]
 

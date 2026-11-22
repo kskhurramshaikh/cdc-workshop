@@ -1,2 +1,11 @@
 fastmcp>=4.2
 pypdf>=6.0
+
+# Layer 1 of the privacy filter (OpenAI Privacy Filter model). Optional:
+# if these aren't installed, the server falls back to regex-only (Layer 2)
+# PII detection automatically — see cdc_privacy_filter.default_model_backend().
+# Set CDC_DISABLE_PII_MODEL=1 to skip loading them even if installed.
+torch
+transformers>=4.57
+accelerate
+safetensors

@@ -47,8 +47,19 @@ CNIC_RE = re.compile(r"\b\d{5}-\d{7}-\d\b|\b\d{13}\b")
 #   Account No :     0501-195629-0450-00
 #   Account No:      1081032827497015
 #   90006930000036   (bare, following "Account #:")
+#
+# Real bank statements (e.g. the ZTBL/BOP corpus) also repeat the account
+# number many times on later lines with NO "Account" label nearby at all
+# (e.g. inside a transaction table, or embedded as the trailing 16 digits
+# of an IBAN that itself only appears once). Group 2 is a label-free
+# fallback: a standalone 14-18 digit run (the observed CDC/bank account
+# number length range) that is NOT part of a longer digit run — the
+# lookaround asserts nothing digit/punctuation-joined sits immediately
+# before or after, so it can't clip a longer number or a smaller one
+# already caught by CNIC_RE (13 digits) or PHONE_RE.
 ACCOUNT_NO_RE = re.compile(
-    r"\bAccount\s*(?:No\.?|#)?\s*[:.]?\s*((?:\d{2,8}-){1,3}\d{2,8}|\d{6,20})",
+    r"\bAccount\s*(?:No\.?|#)?\s*[:.]?\s*((?:\d{2,8}-){1,3}\d{2,8}|\d{6,20})"
+    r"|(?<![\w.,-])((?:\d{2,8}-){1,3}\d{2,8}|\d{14,18})(?![\w.,-])",
     re.IGNORECASE,
 )
 
