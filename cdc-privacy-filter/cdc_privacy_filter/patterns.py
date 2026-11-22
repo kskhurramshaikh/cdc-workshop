@@ -86,6 +86,21 @@ ACCOUNT_NO_RE = re.compile(
 # mistook that for "part of a longer chain" and blocked a genuine date.
 DATE_RE = re.compile(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{4}\b")
 
+# Word-format dates, e.g. "September 1, 2025" (bill issue dates, UC1) and
+# "01 OCT 2026" / "5 October 2026" (statement period dates, UC2 — seen in
+# both all-caps abbreviated and mixed-case full-name forms). Enumerable
+# (a fixed list of month names/abbreviations), so this is Layer 2's job
+# too, same as the dashed-date fix above — not something worth
+# fine-tuning Layer 1 (the model) for. Shares the "DATE" category with
+# DATE_RE so both numeric and word-format dates draw from the same
+# pseudonym counter.
+_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
+MONTH_DATE_RE = re.compile(
+    rf"\b{_MONTH}\s+\d{{1,2}},?\s+\d{{4}}\b"       # September 1, 2025
+    rf"|\b\d{{1,2}}\s+{_MONTH},?\s+\d{{4}}\b",     # 01 OCT 2026 / 5 October 2026
+    re.IGNORECASE,
+)
+
 # Local mobile / landline numbers, e.g. 0300-1234567, 03001234567, 021-32413822
 PHONE_RE = re.compile(r"\b0\d{2,4}-?\d{6,9}\b")
 
@@ -149,6 +164,7 @@ STRUCTURED_PATTERNS = [
     ("NTN", NTN_RE),
     ("CNIC", CNIC_RE),
     ("DATE", DATE_RE),
+    ("DATE", MONTH_DATE_RE),
     ("ACCOUNT_NO", ACCOUNT_NO_RE),
     ("EMAIL", EMAIL_RE),
     ("URL", URL_RE),

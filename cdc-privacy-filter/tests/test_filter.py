@@ -135,6 +135,23 @@ def test_date_after_unrelated_version_stamp_still_caught():
     assert pf.deredact(redacted) == VERSION_STAMP_EXCERPT
 
 
+WORD_DATE_EXCERPT = "Karachi    September 1, 2025\nStatement period: 01 OCT 2026 to 5 October 2026"
+
+
+def test_word_format_dates_redacted():
+    """Word-format dates (bill issue dates, statement periods) — a
+    different shape from the dashed DD-MM-YYYY dates above, but still
+    enumerable (a fixed set of month names/abbreviations), so this is
+    Layer 2's job too rather than something to fine-tune Layer 1 for."""
+    pf = _fresh_filter()
+    redacted = pf.redact(WORD_DATE_EXCERPT)
+    assert "September 1, 2025" not in redacted
+    assert "01 OCT 2026" not in redacted
+    assert "5 October 2026" not in redacted
+    assert redacted.count("[DATE_") == 3
+    assert pf.deredact(redacted) == WORD_DATE_EXCERPT
+
+
 def test_company_email_and_website_redacted():
     """Layer 2 masks organizational contact info too — unlike Layer 1
     (the model), which deliberately leaves it alone since it's scoped
