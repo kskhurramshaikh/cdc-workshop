@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.DS_Store
+# generated FMS output files (keep the folders, not the generated content)
+cdc-mcp-server/mock_data/uc1/output/*.txt
+cdc-mcp-server/mock_data/uc2/output/*.txt
+
+# Real CDC sample documents and anything derived from them stay local
+# only — never pushed to this repo, regardless of visibility.
+cdc-mcp-server/mock_data/

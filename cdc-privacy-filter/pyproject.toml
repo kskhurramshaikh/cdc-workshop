@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cdc-privacy-filter"
+version = "0.1.0"
+description = "CDC Privacy Filter by Blockverse — local Pakistani-financial PII redaction/de-redaction"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+include = ["cdc_privacy_filter*"]
