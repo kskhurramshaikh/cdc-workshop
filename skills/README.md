@@ -13,20 +13,28 @@ layouts in the real sample set (BILL-01's trade-by-trade format and
 BILL-06's VisionMax format) — the net amounts it describes extracting
 match the parsed totals exactly (13,343.52 and 854.15 respectively).
 
-The rest are written live during the session, following that pattern:
+All five skills are now drafted, following that pattern end to end for
+both use cases:
 
-- `broker-bill-reader.md` — **done** (model skill) — extract broker,
-  fund, period, brokerage, WHT, SST, net amount from a redacted broker
-  bill, across both real layout formats
+- `broker-bill-reader.md` — extract broker, fund, period, brokerage,
+  WHT, SST, net amount from a redacted broker bill, across both real
+  layout formats (model skill)
 - `broker-bill-reconciler.md` — match extracted bill totals against
-  `get_liability_export()`, flag mismatches
-- `bank-statement-reader.md` — extract transactions from a redacted
-  bank statement
-- `bank-reconciler.md` — match transactions against FMS records, flag
-  reversals using `get_reversal_keywords()`
+  `get_liability_export()`, flag amount/period mismatches
+- `bank-statement-reader.md` — extract a clean transaction list from a
+  redacted bank statement, across the 4 real layout formats
+- `bank-reconciler.md` — flag reversed/returned transactions using
+  the real `get_reversal_keywords()` (Annexure-A) list; notes that
+  full FMS-ledger matching isn't wired up yet (CDC hasn't delivered
+  that export's structure)
 - `fms-upload-formatter.md` — format matched/reconciled rows into the
   `Date,Description,Dr/Cr,0,Amount` FMS upload format and call
-  `write_fms_payment_file()` / `write_fms_reconciliation_file()`
+  `write_fms_payment_file()` / `write_fms_reconciliation_file()`;
+  flags the Dr/Cr sign convention as a working assumption to confirm
+  with CDC live
 
-Khurram facilitates; participants supply the business logic live for
-the remaining four.
+These are drafted ahead of the workshop as working references. Khurram
+facilitates the live session where participants read, discuss, and
+extend/adjust this logic against CDC's actual rules and edge cases as
+they come up — the drafts give the session a running start rather than
+a blank page.
