@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .context_map import ContextMap
 from .model_backend import ModelBackend, NoOpModelBackend, Span
-from .patterns import ACCOUNT_NO_RE, NAME_PATTERNS, STRUCTURED_PATTERNS
+from .patterns import ACCOUNT_NO_RE, NAME_CANON, NAME_PATTERNS, STRUCTURED_PATTERNS
 
 
 class PrivacyFilter:
@@ -53,13 +53,22 @@ class PrivacyFilter:
                 spans.append(Span(start, end, category, text[start:end]))
                 claimed.append((start, end))
 
-        # 2. Known fund / broker names
+        # 2. Known fund / broker names. Canonicalise the matched text to
+        #    its one fixed spelling from KNOWN_FUND_NAMES/KNOWN_BROKER_NAMES
+        #    before it reaches the ContextMap: the match itself is already
+        #    case-insensitive, but without this the *pseudonym* would
+        #    depend on which casing variant appeared in this particular
+        #    document, splitting one real broker/fund across two tokens.
+        #    This only changes what gets pseudonymised, not the span's
+        #    start/end — the original text is still replaced in place.
         for category, pattern in NAME_PATTERNS:
             for m in pattern.finditer(text):
                 start, end = m.start(), m.end()
                 if overlaps(start, end):
                     continue
-                spans.append(Span(start, end, category, text[start:end]))
+                matched = text[start:end]
+                canonical = NAME_CANON.get(category, {}).get(matched.lower(), matched)
+                spans.append(Span(start, end, category, canonical))
                 claimed.append((start, end))
 
         # 3. Model backend (free-text names/addresses the regex layer

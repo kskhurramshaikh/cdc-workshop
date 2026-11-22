@@ -227,3 +227,21 @@ NAME_PATTERNS = [
     ("FUND", FUND_NAME_RE),
     ("BROKER", BROKER_NAME_RE),
 ]
+
+# Canonicalisation lookup, lowercased-match -> canonical spelling, for each
+# NAME_PATTERNS category. BROKER_NAME_RE/FUND_NAME_RE match case-
+# insensitively (by design — the same broker appears in ALL CAPS in a
+# bill's signature line and in Title Case in the index metadata), but
+# ContextMap.pseudonymise() keys on the exact matched string. Without
+# canonicalising to one spelling before that lookup, the same real-world
+# broker/fund gets two different pseudonym tokens depending on which
+# casing variant happened to match first (confirmed via live testing:
+# "ABA Ali Habib Securities" from bills_index.json's metadata field vs.
+# "ABA ALI HABIB SECURITIES" from the PDF's own "in favour of..." line
+# produced [BROKER_001] and [BROKER_014] for the identical broker) — which
+# silently breaks any downstream logic trying to match a bill's broker
+# token against the liability export's broker token for the same entity.
+NAME_CANON = {
+    "FUND": {n.lower(): n for n in KNOWN_FUND_NAMES},
+    "BROKER": {n.lower(): n for n in KNOWN_BROKER_NAMES},
+}
