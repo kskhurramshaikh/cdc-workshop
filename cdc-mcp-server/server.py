@@ -102,15 +102,31 @@ _FIELD_CATEGORY = {
     "iban": "IBAN",
 }
 
+# Fields that are structured financial/period data, not PII, from the
+# mock-data schema itself — must pass through untouched, never run
+# through the regex+model redaction pipeline. Found via live testing on
+# get_liability_export: without this, "period" values like "2025-08" get
+# swallowed whole by ACCOUNT_NO_RE's bare-digit-dash fallback (identical
+# shape to a dashed account number), and bare "expected_amount" strings
+# like "13,343.52" get partially mangled by the free-text model backend
+# (Layer 1), which has no sentence context to work with on an isolated
+# number and can misfire — e.g. "13,343.52" coming back as
+# "13,[ADDRESS_001].52". The whole point of this filter is to protect
+# identity/contact info, not obscure the figures the reconciliation
+# logic itself needs to read — same principle read_broker_bill already
+# follows for brokerage/WHT/SST amounts in free text.
+_PASSTHROUGH_FIELDS = {"period", "expected_amount", "amount", "bill_id", "statement_id"}
+
 
 def _redact_record(record: dict) -> dict:
     """Redact a mock-data record, using the known field->category map
-    where available and falling back to regex-based redaction (which
-    catches broker/fund names, free-text titles, etc.) everywhere else.
+    where available, passing structured numeric/period fields through
+    untouched, and falling back to regex-based redaction (which catches
+    broker/fund names, free-text titles, etc.) everywhere else.
     """
     out = {}
     for key, value in record.items():
-        if value is None:
+        if value is None or key in _PASSTHROUGH_FIELDS:
             out[key] = value
         elif key in _FIELD_CATEGORY and isinstance(value, str):
             out[key] = _context_map.pseudonymise(_FIELD_CATEGORY[key], value)
@@ -173,7 +189,7 @@ def get_liability_export() -> list[dict]:
     # SWAP FOR PRODUCTION: pull from CDC's back-office liability export
     # (format TBD from CDC).
     rows = json.loads((BASE / "mock_data" / "uc1" / "liability_export.json").read_text())
-    return [_redact_value(r) for r in rows]
+    return [_redact_record(r) for r in rows]
 
 
 @mcp.tool()
