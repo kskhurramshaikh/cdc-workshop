@@ -23,18 +23,25 @@ Built for the CDC agentic workshop. Two layers:
 | `NTN`         | 2     | `1234567-8`, `S0860170-4`, `17-00-9805-173-46` |
 | `CNIC`        | 2     | 13-digit CNIC (dashed or bare)                 |
 | `ACCOUNT_NO`  | 2     | `Account No: 0501-195629-0450-00`, or a bare 14-18 digit account number with no "Account" label nearby |
+| `EMAIL`       | 2 + 1 | `info@abaalihabib.com` (company letterhead, Layer 2) *and* a personal email mentioned in free text (Layer 1) |
+| `URL`         | 2     | `www.abaalihabib.com`                          |
 | `PHONE`       | 2     | `0213-5684962`                                 |
 | `FUND`        | 2     | `CDC TRUSTEE ASKARI HIGH YIELD SCHEME`         |
 | `BROKER`      | 2     | `Al Habib Capital Markets`                     |
 | `PERSON`      | 1     | a signatory's name on a bill (free text)       |
 | `ADDRESS`     | 1     | a free-text postal address                     |
-| `EMAIL`       | 1     | a personal email mentioned in free text        |
-| `PHONE`/`URL`/`DATE`/`SECRET` | 1 | general free-text PII; shares the `PHONE`/`ACCOUNT_NO` category name with Layer 2 so either layer's catch numbers from the same counter |
+| `DATE`/`SECRET` | 1   | general free-text PII                          |
 
-Note: Layer 1 is tuned to flag *personal* PII, not an organization's
-own public contact info — a company's `info@...` address or public
-website in a letterhead is correctly left alone (see
-`tests/test_model_backend.py::test_corporate_letterhead_contact_is_not_flagged_as_private`).
+Note: by CDC policy, company contact info (a `info@...` letterhead
+address, a corporate website) is masked too — that's Layer 2's job
+(`EMAIL_RE`/`URL_RE` in `patterns.py`), not Layer 1's: the model itself
+is intentionally scoped to *personal* PII and leaves an organization's
+own public contact details alone on its own (verified directly against
+the model in `tests/test_model_backend.py::test_model_itself_does_not_flag_corporate_letterhead_contact`).
+Layer 2 makes no such personal/corporate distinction, so it masks both;
+a *personal* email mentioned in free text (not letterhead) is caught by
+whichever layer sees it first, and either way lands under the same
+`EMAIL` pseudonym family.
 
 Each category gets a stable, sequential pseudonym per `ContextMap`
 instance: `[IBAN_001]`, `[NTN_002]`, `[FUND_003]`, etc. The same real

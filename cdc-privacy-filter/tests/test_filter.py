@@ -36,6 +36,17 @@ IBAN :          PK04ABHI0501195629045000 ROZANA MUNAFA ACCOUNT
 Account No :    0501-195629-0450-00 PKRS ROZANA MUNAFA ACCOUNT
 """
 
+# Real letterhead from the sample bills — company contact info, not
+# personal PII. CDC's policy is to mask this too (unlike Layer 1, the
+# general model, which deliberately leaves organizational contact
+# details alone), so it's Layer 2's job.
+LETTERHEAD_EXCERPT = """
+Office : 419,419-A & 421, KARACHI STOCK EXCHANGE BLDG., KARACHI
+Email  : info@abaalihabib.com
+Web    : www.abaalihabib.com
+Fax    : 32413822
+"""
+
 
 def _fresh_filter():
     return PrivacyFilter(context_map=ContextMap())
@@ -82,6 +93,19 @@ def test_account_no_dashed_format():
     assert "0501-195629-0450-00" not in redacted
     assert "PK04ABHI0501195629045000" not in redacted
     assert pf.deredact(redacted) == ABHI_EXCERPT
+
+
+def test_company_email_and_website_redacted():
+    """Layer 2 masks organizational contact info too — unlike Layer 1
+    (the model), which deliberately leaves it alone since it's scoped
+    to personal PII, not corporate boilerplate."""
+    pf = _fresh_filter()
+    redacted = pf.redact(LETTERHEAD_EXCERPT)
+    assert "info@abaalihabib.com" not in redacted
+    assert "www.abaalihabib.com" not in redacted
+    assert "[EMAIL_" in redacted
+    assert "[URL_" in redacted
+    assert pf.deredact(redacted) == LETTERHEAD_EXCERPT
 
 
 def test_stable_pseudonyms_within_one_context_map():

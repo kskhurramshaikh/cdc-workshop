@@ -66,6 +66,19 @@ ACCOUNT_NO_RE = re.compile(
 # Local mobile / landline numbers, e.g. 0300-1234567, 03001234567, 021-32413822
 PHONE_RE = re.compile(r"\b0\d{2,4}-?\d{6,9}\b")
 
+# Email addresses and websites — including a company's OWN letterhead
+# contact info (e.g. "info@abaalihabib.com", "www.abaalihabib.com").
+# Layer 1 (the general PII model) deliberately leaves organizational
+# contact details alone — it's scoped to personal PII, not corporate
+# boilerplate — but CDC's policy for this workshop is to mask company
+# contact info too, so that's a Layer 2 job: unlike the model, this
+# regex makes no personal-vs-corporate distinction, by design.
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+URL_RE = re.compile(
+    r"\b(?:https?://[^\s,]+|www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:/[^\s,]*)?)",
+    re.IGNORECASE,
+)
+
 # CDC trustee / fund titles — pseudonymised as commercially sensitive data,
 # not because they are personal PII. Extend this list as new funds appear.
 KNOWN_FUND_NAMES = [
@@ -100,12 +113,21 @@ KNOWN_BROKER_NAMES = [
 
 # Ordered list of (category, pattern) for the deterministic scan.
 # Order matters: IBAN before NTN/CNIC/ACCOUNT_NO (longer, more specific,
-# must not be swallowed by a shorter bare-digit rule).
+# must not be swallowed by a shorter bare-digit rule). EMAIL/URL go
+# before PHONE/ACCOUNT_NO's bare-digit fallbacks aren't at risk of
+# collision (letters/@ vs. pure digit runs), but checking them early
+# costs nothing and keeps the "most specific first" convention.
+#
+# EMAIL/URL/PHONE share their category name with Layer 1 (the model) on
+# purpose — see model_backend.py's _LABEL_TO_CATEGORY — so a value
+# either layer catches is numbered from the same ContextMap counter.
 STRUCTURED_PATTERNS = [
     ("IBAN", IBAN_RE),
     ("NTN", NTN_RE),
     ("CNIC", CNIC_RE),
     ("ACCOUNT_NO", ACCOUNT_NO_RE),
+    ("EMAIL", EMAIL_RE),
+    ("URL", URL_RE),
     ("PHONE", PHONE_RE),
 ]
 

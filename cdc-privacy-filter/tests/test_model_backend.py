@@ -45,8 +45,11 @@ bilal.rasheed@abaalihabib.com
 
 # A personal email/phone, phrased the way the model was trained to
 # recognise private contact info (vs. a company's own public contact
-# details in letterhead, which the model correctly leaves alone — see
-# test_corporate_letterhead_contact_is_not_flagged_as_private below).
+# details in letterhead — see test_model_itself_does_not_flag_corporate_
+# letterhead_contact below, which checks the MODEL alone, not the full
+# filter: Layer 2 now masks letterhead contact info too, by policy, so
+# going through PrivacyFilter would mask it regardless of what Layer 1
+# does).
 PERSONAL_CONTACT_EXCERPT = "Please reach me at bilal.rasheed@abaalihabib.com for any queries."
 
 LETTERHEAD_EXCERPT = """
@@ -73,17 +76,19 @@ def test_model_detects_personal_email_regex_layer_misses():
 
 
 @requires_model
-def test_corporate_letterhead_contact_is_not_flagged_as_private():
-    """Documented model behaviour, not a bug in our wiring: a generic
-    company `info@...` / public website in letterhead-style `Label :
-    value` formatting is organizational contact info, not personal
-    PII, so the model correctly leaves it unredacted. If CDC's own
-    policy wants company contact details masked too, that's a Layer-2
-    (regex) job, not something to force onto Layer 1."""
-    pf = PrivacyFilter(context_map=ContextMap(), model_backend=_backend)
-    redacted = pf.redact(LETTERHEAD_EXCERPT)
-    assert "info@abaalihabib.com" in redacted
-    assert "www.abaalihabib.com" in redacted
+def test_model_itself_does_not_flag_corporate_letterhead_contact():
+    """Documented model behaviour, checked against the model in
+    isolation (not through PrivacyFilter, since Layer 2 now masks
+    letterhead contact info too by CDC policy — see
+    test_filter.py::test_company_email_and_website_redacted — which
+    would mask it regardless of what Layer 1 does): a generic company
+    `info@...` / public website in letterhead-style `Label : value`
+    formatting is organizational contact info, not personal PII, so
+    the model itself correctly leaves it undetected. This is exactly
+    why masking company contact info is Layer 2's job, not Layer 1's."""
+    categories = {span.category for span in _backend.detect(LETTERHEAD_EXCERPT)}
+    assert "EMAIL" not in categories
+    assert "URL" not in categories
 
 
 @requires_model
