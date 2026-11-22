@@ -36,13 +36,15 @@ class PrivacyFilter:
         #    looser NTN/CNIC bare-digit fallbacks, etc.)
         for category, pattern in STRUCTURED_PATTERNS:
             for m in pattern.finditer(text):
-                if category == "ACCOUNT_NO":
-                    # Only pseudonymise the captured digit/dash run, not
-                    # the "Account No:" label itself. ACCOUNT_NO_RE has
-                    # two alternatives (labeled form -> group 1,
-                    # label-free bare-digit fallback -> group 2); use
-                    # whichever one actually matched.
-                    g = 1 if m.group(1) is not None else 2
+                if m.lastindex is not None:
+                    # Pattern has a capturing group — e.g. ACCOUNT_NO_RE's
+                    # "Account No: 123" / bare-fallback alternation, or
+                    # PHONE_LABELED_RE's "Phone #: 123-4" — so only
+                    # pseudonymise the captured value, not the label text
+                    # itself. lastindex is whichever group actually
+                    # participated in the match (the right one when the
+                    # pattern is an alternation of several groups).
+                    g = m.lastindex
                     start, end = m.start(g), m.end(g)
                 else:
                     start, end = m.start(), m.end()

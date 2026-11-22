@@ -152,6 +152,51 @@ def test_word_format_dates_redacted():
     assert pf.deredact(redacted) == WORD_DATE_EXCERPT
 
 
+PHONE_LABELED_EXCERPT = (
+    "Phone #    :  32429664-7\nSales Tax Reg.:   S-1234567-8"
+)
+PHONE_LABELED_EXCERPT_2 = "TEL: (9221) 34302182-84 URL: www.example.com"
+PHONE_LABELED_EXCERPT_3 = "TEL: +92 21 38694242 EMAIL: accounts@example.pk"
+
+
+def test_labeled_phone_numbers_redacted_without_leading_zero():
+    """Found via real-corpus smoke testing: PHONE_RE only matches numbers
+    with a leading 0 (e.g. '021-32413822'), but real broker letterheads
+    also use 'Phone #: 32429664-7' (no leading 0) and 'TEL: (9221)
+    34302182-84' (parenthesised city code) — both missed entirely before
+    this fix. The label is what makes a bare-digit fallback safe here: an
+    unlabeled version of this fix was rejected because the same digit
+    shapes also show up as cheque/reference numbers in UC2 bank
+    statements, which must NOT be masked."""
+    pf = _fresh_filter()
+    redacted = pf.redact(PHONE_LABELED_EXCERPT)
+    assert "32429664-7" not in redacted
+    assert "[PHONE_" in redacted
+    assert "Phone #" in redacted  # the label itself stays visible
+    assert pf.deredact(redacted) == PHONE_LABELED_EXCERPT
+
+
+def test_labeled_phone_number_not_mislabeled_as_account_no():
+    """A labeled phone number like 'TEL: (9221) 34302182-84' has the same
+    'digit groups joined by dashes' shape as ACCOUNT_NO_RE's label-free
+    bare-digit fallback, so PHONE_LABELED_RE must claim it first — same
+    mislabeling failure mode DATE_RE was added to prevent earlier."""
+    pf = _fresh_filter()
+    redacted = pf.redact(PHONE_LABELED_EXCERPT_2)
+    assert "34302182-84" not in redacted
+    assert "[PHONE_" in redacted
+    assert "[ACCOUNT_NO_" not in redacted
+    assert pf.deredact(redacted) == PHONE_LABELED_EXCERPT_2
+
+
+def test_international_prefix_phone_number_redacted():
+    pf = _fresh_filter()
+    redacted = pf.redact(PHONE_LABELED_EXCERPT_3)
+    assert "+92 21 38694242" not in redacted
+    assert "[PHONE_" in redacted
+    assert pf.deredact(redacted) == PHONE_LABELED_EXCERPT_3
+
+
 def test_company_email_and_website_redacted():
     """Layer 2 masks organizational contact info too — unlike Layer 1
     (the model), which deliberately leaves it alone since it's scoped

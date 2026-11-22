@@ -104,6 +104,40 @@ MONTH_DATE_RE = re.compile(
 # Local mobile / landline numbers, e.g. 0300-1234567, 03001234567, 021-32413822
 PHONE_RE = re.compile(r"\b0\d{2,4}-?\d{6,9}\b")
 
+# Office phone/fax numbers introduced by a "Phone"/"Fax"/"Tel" label.
+# Found via real-corpus smoke testing: PHONE_RE above only matches numbers
+# with a leading 0 (e.g. "021-32413822"), but the broker letterheads in the
+# real bills use several other shapes for the *same* kind of number, all
+# missed by PHONE_RE:
+#   Phone #    :  32429664-7        (no leading 0, dash-separated extension)
+#   Phone #    :  32270808-13
+#   TEL: +92 21 38694242            (international prefix)
+#   TEL: (9221) 246 3002-4          (parenthesised city code)
+#   TEL: (9221) 111 82 87 87
+#   TEL: (9221) 34302182-84
+# These shapes alone (bare digit runs) would be far too risky to match
+# without a label — a corpus-wide check found bare 7-8 digit runs are also
+# used for cheque numbers, reference numbers and customer IDs in the UC2
+# bank statements, and masking those would be a real functional regression
+# (UC2's reconciliation flow needs cheque numbers intact). The label is
+# what makes this safe and specific, same principle as ACCOUNT_NO_RE's own
+# labeled alternative. Capturing group 1 holds just the number, so only
+# that gets pseudonymised and the "Phone #:" label itself stays visible —
+# see filter.py's generic "match.lastindex" span selection.
+#
+# Known residual gap (documented, not fixed here): some letterheads also
+# carry a second, *unlabeled* number — almost always the Fax — that the
+# PDF's column-based text extraction separates from its "Fax" label
+# entirely, so there is no reliable label to anchor on. A bare-digit
+# fallback broad enough to catch it would reintroduce the cheque/reference
+# -number false-positive risk above, so this is left as a known limitation
+# rather than guessed at.
+PHONE_LABELED_RE = re.compile(
+    r"\b(?:Phone|Fax|Tel(?:ephone)?)\s*(?:#|No\.?)?\s*[:.]?\s*"
+    r"((?:\+|\()?\d[\d()\s-]{3,25}\d)",
+    re.IGNORECASE,
+)
+
 # Email addresses and websites — including a company's OWN letterhead
 # contact info (e.g. "info@abaalihabib.com", "www.abaalihabib.com").
 # Layer 1 (the general PII model) deliberately leaves organizational
@@ -159,12 +193,19 @@ KNOWN_BROKER_NAMES = [
 # EMAIL/URL/PHONE share their category name with Layer 1 (the model) on
 # purpose — see model_backend.py's _LABEL_TO_CATEGORY — so a value
 # either layer catches is numbered from the same ContextMap counter.
+# PHONE_LABELED_RE runs *before* ACCOUNT_NO_RE: a labeled phone number
+# like "Phone #    :  32270808-13" or "TEL: (9221) 34302182-84" has the
+# exact same "digit groups joined by dashes" shape as ACCOUNT_NO_RE's
+# label-free bare-digit fallback, so without this ordering those numbers
+# would get claimed (and mislabeled) as ACCOUNT_NO first — the same
+# mislabeling failure mode DATE_RE was added to prevent above.
 STRUCTURED_PATTERNS = [
     ("IBAN", IBAN_RE),
     ("NTN", NTN_RE),
     ("CNIC", CNIC_RE),
     ("DATE", DATE_RE),
     ("DATE", MONTH_DATE_RE),
+    ("PHONE", PHONE_LABELED_RE),
     ("ACCOUNT_NO", ACCOUNT_NO_RE),
     ("EMAIL", EMAIL_RE),
     ("URL", URL_RE),
