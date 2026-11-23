@@ -113,6 +113,42 @@ mcp = FastMCP("cdc-workshop")
 _statement_text_cache: dict[str, tuple[float, int, str]] = {}
 _bill_text_cache: dict[str, tuple[float, int, str]] = {}
 
+# Same idea as the PDF cache above, for the small static JSON mock-data
+# files (bills_index, liability_export, statements_index, accounts_detail,
+# amc_info). Before this, list_broker_bills/list_bank_statements/
+# get_liability_export/get_accounts_detail/get_amc_info re-redacted every
+# field of their (unchanging) source file on *every single call* — with
+# Sarhad configured (RENDER_PRIVACY_FILTER_URL set) that means a real
+# network round-trip per redactable field, every time. A handful of
+# fields is fine once, but FastMCP does not cancel an already-running
+# sync tool call when its caller stops waiting (e.g. the device bridge's
+# ~80s RPC window expires) — so a caller that times out and retries just
+# stacks another full, fully redundant pass over the same unchanging data
+# on top of whatever earlier attempt(s) are still running, and those
+# pile up. This is what turned get_accounts_detail (20 small JSON rows)
+# into a 20+ minute operation under repeated retries: not bulk PDF work,
+# just the same tiny redaction job being redone again and again with no
+# cache to short-circuit it. Caching the fully-redacted result, keyed on
+# the source file's (mtime, size), means every call after the first —
+# including a caller's own retry — returns instantly.
+_json_record_cache: dict[str, tuple[float, int, object]] = {}
+
+
+def _redact_json_records_cached(cache_key: str, path: Path, redact_fn):
+    """Load path's JSON once, run redact_fn(rows) once, and cache the
+    result under cache_key — keyed on path's (mtime, size) so editing
+    the mock file invalidates its own entry automatically."""
+    stat = path.stat()
+    key = (stat.st_mtime, stat.st_size)
+    cached = _json_record_cache.get(cache_key)
+    if cached is not None and (cached[0], cached[1]) == key:
+        return cached[2]
+
+    rows = json.loads(path.read_text())
+    redacted = redact_fn(rows)
+    _json_record_cache[cache_key] = (key[0], key[1], redacted)
+    return redacted
+
 
 def _redact(text: str) -> str:
     if _RENDER_URL:
@@ -260,16 +296,19 @@ def list_broker_bills() -> list[dict]:
     pseudonym token (resolve via read_broker_bill)."""
     # SWAP FOR PRODUCTION: replace with a directory listing / API call
     # against CDC's real incoming-bills folder.
-    index = json.loads((BASE / "mock_data" / "uc1" / "bills_index.json").read_text())
-    return [
-        {
-            "bill_id": r["bill_id"],
-            "broker_name": _redact(r["broker_name"]),
-            "fund": _redact(r["fund"]),
-            "period": r["period"],
-        }
-        for r in index
-    ]
+    def _redact_rows(index):
+        return [
+            {
+                "bill_id": r["bill_id"],
+                "broker_name": _redact(r["broker_name"]),
+                "fund": _redact(r["fund"]),
+                "period": r["period"],
+            }
+            for r in index
+        ]
+
+    path = BASE / "mock_data" / "uc1" / "bills_index.json"
+    return _redact_json_records_cached("list_broker_bills", path, _redact_rows)
 
 
 @mcp.tool()
@@ -301,8 +340,10 @@ def get_liability_export() -> list[dict]:
     """
     # SWAP FOR PRODUCTION: pull from CDC's back-office liability export
     # (format TBD from CDC).
-    rows = json.loads((BASE / "mock_data" / "uc1" / "liability_export.json").read_text())
-    return [_redact_record(r) for r in rows]
+    path = BASE / "mock_data" / "uc1" / "liability_export.json"
+    return _redact_json_records_cached(
+        "get_liability_export", path, lambda rows: [_redact_record(r) for r in rows]
+    )
 
 
 @mcp.tool()
@@ -346,8 +387,10 @@ def list_bank_statements() -> list[dict]:
     """List available bank statement PDFs with redacted account metadata.
     Returns statement_id, bank_name, and pseudonymised account_no/IBAN/
     account_title."""
-    index = json.loads((BASE / "mock_data" / "uc2" / "statements_index.json").read_text())
-    return [_redact_record(r) for r in index]
+    path = BASE / "mock_data" / "uc2" / "statements_index.json"
+    return _redact_json_records_cached(
+        "list_bank_statements", path, lambda rows: [_redact_record(r) for r in rows]
+    )
 
 
 @mcp.tool()
@@ -375,8 +418,10 @@ def get_accounts_detail() -> list[dict]:
     the 20 sample statements so the recon flow has real shapes to work
     with; swap this tool body for the real file once CDC delivers it.
     """
-    rows = json.loads((BASE / "mock_data" / "uc2" / "accounts_detail.json").read_text())
-    return [_redact_record(r) for r in rows]
+    path = BASE / "mock_data" / "uc2" / "accounts_detail.json"
+    return _redact_json_records_cached(
+        "get_accounts_detail", path, lambda rows: [_redact_record(r) for r in rows]
+    )
 
 
 @mcp.tool()
@@ -387,8 +432,10 @@ def get_amc_info() -> list[dict]:
     outstanding per context.txt). Derived from the fund titles seen in
     the sample bank statements.
     """
-    rows = json.loads((BASE / "mock_data" / "uc2" / "amc_info.json").read_text())
-    return [_redact_value(r) for r in rows]
+    path = BASE / "mock_data" / "uc2" / "amc_info.json"
+    return _redact_json_records_cached(
+        "get_amc_info", path, lambda rows: [_redact_value(r) for r in rows]
+    )
 
 
 @mcp.tool()
