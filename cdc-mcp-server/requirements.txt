@@ -1,9 +1,9 @@
 fastmcp>=4.2
 pypdf>=6.0
 
-# Needed only when RENDER_PRIVACY_FILTER_URL is set (both privacy-filter
-# layers hosted on Render — see remote_detector.py / render-service/).
-requests
+# When RENDER_PRIVACY_FILTER_URL is set, remote_detector.py talks to
+# Sarhad (render-service/) as an MCP client over streamable HTTP — no
+# extra dependency needed, fastmcp (above) is the client too.
 
 # Layer 1 of the privacy filter (OpenAI Privacy Filter model), for the
 # fully-local path (RENDER_PRIVACY_FILTER_URL unset, the default). If

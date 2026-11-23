@@ -7,9 +7,11 @@ git+https://github.com/huggingface/transformers.git
 torch
 accelerate
 safetensors
-fastapi
-uvicorn[standard]
-pydantic
+
+# Sarhad speaks the real MCP protocol over HTTP (not a plain REST API) —
+# fastmcp pulls in its own starlette/uvicorn/pydantic versions, so those
+# aren't pinned separately here.
+fastmcp
 
 # Local package (Layer 1 + Layer 2 filter logic). Render's build runs
 # from the repo root (see render.yaml rootDir), so this relative path

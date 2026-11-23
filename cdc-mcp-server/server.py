@@ -59,10 +59,11 @@ _context_map = ContextMap()
 #   Pakistan-specific structured identifiers (IBAN, NTN, CNIC, account
 #   numbers, known fund/broker names) the general model was never trained
 #   to recognise as such.
-# Render hosting (workshop stand-in for an on-prem deployment): if set,
-# both privacy-filter layers run on Render instead of in this process —
-# _redact() calls out to /detect for span detection and applies the
-# pseudonym substitution locally via _privacy_filter.apply_spans(), so
+# Sarhad on Render (workshop stand-in for an on-prem/hosted deployment):
+# if set, both privacy-filter layers run on Render instead of in this
+# process — _redact() calls Sarhad's `detect_pii` MCP tool (via
+# remote_detector.py) for span detection and applies the pseudonym
+# substitution locally via _privacy_filter.apply_spans(), so
 # the ContextMap (the only place real PII<->pseudonym mappings live)
 # never leaves this machine. Unset (the default) keeps everything local,
 # exactly as before this was added.

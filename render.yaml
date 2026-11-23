@@ -1,4 +1,10 @@
-# Render Blueprint for the CDC privacy-filter hosting stand-in.
+# Render Blueprint for Sarhad — Blockverse's privacy-filter MCP service.
+#
+# Sarhad speaks the real MCP protocol over streamable HTTP (FastMCP,
+# render-service/app.py), not a plain REST API — so any MCP client
+# (Claude, cdc-mcp-server, or a future paying customer's own agent) can
+# connect to it directly with a standard MCP client config pointed at
+# https://<this-service>.onrender.com/mcp.
 #
 # NOTE ON SIZING: the real OpenAI Privacy Filter weights are ~2.8GB
 # (bf16) and torch/transformers add meaningful overhead on top of that.
@@ -12,13 +18,16 @@
 # architecture-sizing.md can't be validated on Render itself.
 services:
   - type: web
-    name: cdc-privacy-filter
+    name: sarhad-privacy-filter
     runtime: python
     plan: pro
     region: oregon
     rootDir: render-service
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    startCommand: python app.py
+    # Plain HTTP route outside the MCP protocol (app.py's @mcp.custom_route),
+    # so Render's prober gets an ordinary 2xx GET rather than needing to
+    # speak MCP itself.
     healthCheckPath: /health
     # Model download + load can take a couple of minutes on first boot
     # (weights aren't baked into the image) — give it room before Render
@@ -28,3 +37,5 @@ services:
         sync: false  # set manually in the Render dashboard, never committed
       - key: PYTHON_VERSION
         value: "3.11.8"
+      # PORT is injected automatically by Render for web services —
+      # app.py reads it via os.environ["PORT"]; not set here.
