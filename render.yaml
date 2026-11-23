@@ -26,6 +26,24 @@
 # sessions, suspend this service in the Render dashboard when it's not
 # actively being used, and resume it (allow a few minutes for cold
 # start + model reload) before the next session.
+#
+# PERSISTENT MODEL CACHE: this service has no persistent disk attached
+# by default (it was created as a standalone web service, not synced
+# from this Blueprint), so the ~2.8GB OpenAI Privacy Filter weights get
+# re-downloaded from Hugging Face on every cold start/redeploy/instance
+# rotation — a multi-minute delay that's a real risk mid-workshop if
+# the service happens to restart (a redeploy, an env var change, a
+# Render-side instance replacement) right before a live demo. The
+# `disk` block below documents the fix — a small persistent volume
+# mounted at the same path HF_HOME points the model cache to (set via
+# the Render dashboard's "Environment" tab on the existing service) —
+# so weights persist across restarts and only the very first boot ever
+# pays the download cost. Render's API/MCP tooling has no call to
+# attach a disk to an already-existing standalone service, so the disk
+# itself must be added once by hand via the dashboard's "Disks" tab on
+# this service (mount path: /var/data/hf-cache, to match HF_HOME); this
+# block exists so a *future* Blueprint-driven recreation of this
+# service (e.g. disaster recovery) includes it automatically.
 services:
   - type: web
     name: sarhad-privacy-filter
@@ -42,10 +60,16 @@ services:
     # Model download + load can take a couple of minutes on first boot
     # (weights aren't baked into the image) — give it room before Render
     # decides the deploy failed.
+    disk:
+      name: hf-cache
+      mountPath: /var/data/hf-cache
+      sizeGB: 10
     envVars:
       - key: PRIVACY_FILTER_API_KEY
         sync: false  # set manually in the Render dashboard, never committed
       - key: PYTHON_VERSION
         value: "3.11.8"
+      - key: HF_HOME
+        value: /var/data/hf-cache
       # PORT is injected automatically by Render for web services —
       # app.py reads it via os.environ["PORT"]; not set here.
