@@ -8,19 +8,21 @@
 #
 # NOTE ON SIZING: the real OpenAI Privacy Filter weights are ~2.8GB
 # (bf16) and torch/transformers add meaningful overhead on top of that.
-# "pro" (2 CPU / 4GB RAM) is the minimum plan likely to hold the model in
-# memory with headroom; bump to "pro_plus" (4 CPU / 8GB) if the service
-# OOMs or you want the extra CPU for concurrent-request throughput (see
-# docs/architecture-sizing.md for the throughput-per-core numbers this is
-# based on). Render has no GPU web-service instance type as of this
-# writing, which is consistent with our CPU-first architecture decision
-# — but it does mean the GPU-batch-throughput open item in
-# architecture-sizing.md can't be validated on Render itself.
+# "standard" (1 CPU / 2GB RAM, $25/mo) is the workshop-stage choice —
+# cost-conscious, and tight but workable for a single model instance
+# with no concurrent batch load. Bump to "pro" (2 CPU / 4GB, $85/mo) if
+# the service OOMs, or once concurrent-request throughput for real
+# client load matters (see docs/architecture-sizing.md for the
+# throughput-per-core numbers this is based on). Render has no GPU
+# web-service instance type as of this writing, which is consistent
+# with our CPU-first architecture decision — but it does mean the
+# GPU-batch-throughput open item in architecture-sizing.md can't be
+# validated on Render itself.
 services:
   - type: web
     name: sarhad-privacy-filter
     runtime: python
-    plan: pro
+    plan: standard
     region: oregon
     rootDir: render-service
     buildCommand: pip install -r requirements.txt
