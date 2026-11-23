@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -70,6 +71,27 @@ _privacy_filter = PrivacyFilter(context_map=_context_map, model_backend=_model_b
 
 mcp = FastMCP("cdc-workshop")
 
+# In-process cache: statement_id/bill_id -> already-redacted text. Keyed on
+# the source PDF's (mtime, size) so a changed mock file invalidates itself
+# automatically. This is memory-only, scoped to this one server process —
+# never persisted to disk, so it never goes stale or inconsistent across a
+# restart (restart resets _context_map too, so pseudonym numbering and this
+# cache always come from the exact same process).
+#
+# Why this exists: before this, read_bank_statement/read_broker_bill redid
+# the full PDF-extraction + Layer-1-model pass from scratch on *every*
+# call, even a second call for the same already-seen document. For a large
+# statement (e.g. a 664KB PDF whose extracted text runs to dozens of
+# Layer-1 chunks) that first pass can take longer than the device bridge's
+# ~80s RPC window, so the caller's call times out — but the work keeps
+# running server-side (Python doesn't know or care that the caller gave
+# up listening). Without a cache, a retry paid that same full cost again
+# and could time out again forever. With it, the first call's result
+# lands in the cache the moment it finishes (even if that caller never
+# saw it), and a retry a few seconds later returns instantly.
+_statement_text_cache: dict[str, tuple[float, int, str]] = {}
+_bill_text_cache: dict[str, tuple[float, int, str]] = {}
+
 
 def _redact(text: str) -> str:
     return _privacy_filter.redact(text)
@@ -77,6 +99,63 @@ def _redact(text: str) -> str:
 
 def _deredact(text: str) -> str:
     return _privacy_filter.deredact(text)
+
+
+def _extract_and_redact_cached(
+    cache: dict[str, tuple[float, int, str]], doc_id: str, pdf_path: Path
+) -> str:
+    """extract_text() + _redact(), cached per doc_id for this process's
+    lifetime. Keyed on the source file's (mtime, size) so editing/
+    replacing a mock PDF invalidates its own cache entry automatically."""
+    stat = pdf_path.stat()
+    key = (stat.st_mtime, stat.st_size)
+    cached = cache.get(doc_id)
+    if cached is not None and (cached[0], cached[1]) == key:
+        return cached[2]
+
+    raw_text = extract_text(pdf_path)
+    redacted = _redact(raw_text)
+    cache[doc_id] = (key[0], key[1], redacted)
+    return redacted
+
+
+# Pseudonym tokens look like [CATEGORY_NNN] (see ContextMap.pseudonymise).
+# Used as a final, hard safety net on every FMS output line: de-redaction
+# only restores tokens this process's ContextMap actually minted, so any
+# token shape still present afterwards is unresolved — never write that to
+# a real payment/reconciliation file.
+_PSEUDO_TOKEN_RE = re.compile(r"\[[A-Z][A-Z_]*_\d{3}\]")
+
+
+def _deredact_field(value) -> str:
+    """De-redact any pseudonym token inside a single FMS entry field.
+    Every field is coerced through this — not just `description` — so a
+    token in the date, Dr/Cr marker, or a string amount is restored too,
+    not left as a literal [CATEGORY_NNN] in the output file."""
+    return _deredact(str(value))
+
+
+def _build_fms_line(entry: dict, row_index: int) -> str:
+    date = _deredact_field(entry["date"])
+    description = _deredact_field(entry["description"])
+    dr_cr = _deredact_field(entry["dr_cr"])
+    amount = entry["amount"]
+    if isinstance(amount, str):
+        amount = _deredact_field(amount)
+    line = f"{date},{description},{dr_cr},0,{amount}"
+
+    leftover = _PSEUDO_TOKEN_RE.findall(line)
+    if leftover:
+        # This process's ContextMap has no real value for this token (a
+        # stale token from a different run, a typo, or a genuine bug) —
+        # refusing beats silently shipping a broken placeholder into a
+        # real FMS upload file.
+        raise ValueError(
+            f"row {row_index}: unresolved pseudonym token(s) {leftover} — "
+            "no real value for these in this server's context map; "
+            "refusing to write any part of this file."
+        )
+    return line
 
 
 def _redact_value(value):
@@ -171,8 +250,7 @@ def read_broker_bill(bill_id: str) -> str:
         return f"ERROR: no such bill_id '{bill_id}'"
 
     pdf_path = UC1_BILLS / rec["file"]
-    raw_text = extract_text(pdf_path)
-    return _redact(raw_text)
+    return _extract_and_redact_cached(_bill_text_cache, bill_id, pdf_path)
 
 
 @mcp.tool()
@@ -201,16 +279,16 @@ def write_fms_payment_file(
     which will be de-redacted automatically), dr_cr ("-" or "+"), amount
     (number or numeric string). Produces comma-separated lines:
     Date,Description,Dr/Cr,0,Amount — matching the confirmed FMS format.
+    Every field (not just description) is de-redacted, and the whole
+    write is refused — nothing is written — if any field still contains
+    an unresolved pseudonym token afterwards.
     """
     # SWAP FOR PRODUCTION: push to FMS's real upload endpoint/SFTP drop
     # instead of writing a local .txt file.
-    lines = []
-    for e in entries:
-        date = e["date"]
-        description = _deredact(str(e["description"]))
-        dr_cr = e["dr_cr"]
-        amount = e["amount"]
-        lines.append(f"{date},{description},{dr_cr},0,{amount}")
+    try:
+        lines = [_build_fms_line(e, i) for i, e in enumerate(entries)]
+    except ValueError as exc:
+        return {"error": str(exc), "written_to": None, "row_count": 0}
 
     if filename is None:
         filename = f"fms_payment_{datetime.now():%Y%m%d_%H%M%S}.txt"
@@ -248,8 +326,7 @@ def read_bank_statement(statement_id: str) -> str:
         return f"ERROR: no such statement_id '{statement_id}'"
 
     pdf_path = UC2_STATEMENTS / rec["file"]
-    raw_text = extract_text(pdf_path)
-    return _redact(raw_text)
+    return _extract_and_redact_cached(_statement_text_cache, statement_id, pdf_path)
 
 
 @mcp.tool()
@@ -293,16 +370,15 @@ def write_fms_reconciliation_file(
     entries: list[dict], filename: str | None = None
 ) -> dict:
     """Write an FMS bank-reconciliation upload .txt file. Same format as
-    write_fms_payment_file: Date,Description,Dr/Cr,0,Amount. Description
-    may contain pseudonym tokens, which are de-redacted automatically
-    before the line is written."""
-    lines = []
-    for e in entries:
-        date = e["date"]
-        description = _deredact(str(e["description"]))
-        dr_cr = e["dr_cr"]
-        amount = e["amount"]
-        lines.append(f"{date},{description},{dr_cr},0,{amount}")
+    write_fms_payment_file: Date,Description,Dr/Cr,0,Amount. Every field
+    (date, description, Dr/Cr, amount) may contain pseudonym tokens and
+    is de-redacted automatically before the line is written; the whole
+    write is refused — nothing is written — if any field still contains
+    an unresolved pseudonym token afterwards."""
+    try:
+        lines = [_build_fms_line(e, i) for i, e in enumerate(entries)]
+    except ValueError as exc:
+        return {"error": str(exc), "written_to": None, "row_count": 0}
 
     if filename is None:
         filename = f"fms_reconciliation_{datetime.now():%Y%m%d_%H%M%S}.txt"

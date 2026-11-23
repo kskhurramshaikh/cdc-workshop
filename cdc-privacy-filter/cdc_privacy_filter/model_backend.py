@@ -141,43 +141,85 @@ class OpenAIPrivacyFilterBackend:
             pos += self.MAX_CHUNK_CHARS - self.CHUNK_OVERLAP_CHARS
         return offsets
 
+    # How many chunks to hand the pipeline in one call. Batching amortises
+    # the per-call Python/tokenizer overhead across chunks instead of
+    # paying it once per chunk — the dominant cost for a long document
+    # (e.g. a multi-page bank statement whose extracted text runs to
+    # dozens of MAX_CHUNK_CHARS-sized chunks) was previously N sequential
+    # `self._pipeline(chunk)` calls; one call on a list of chunks lets the
+    # pipeline batch the forward passes instead. Kept modest (not "all
+    # chunks at once") so peak memory for a very long document stays
+    # bounded on this workshop's CPU-only, no-GPU setup — same OOM concern
+    # MAX_CHUNK_CHARS itself exists for.
+    PIPELINE_BATCH_SIZE = 8
+
     def detect(self, text: str) -> list[Span]:
         if not text.strip():
             return []
         self._ensure_loaded()
 
-        all_spans: list[Span] = []
-        seen: set[tuple[int, int, str]] = set()
         offsets = self._chunk_offsets(text)
+        chunk_bounds: list[tuple[int, int]] = []
         for i, start_off in enumerate(offsets):
             end_off = offsets[i + 1] + self.CHUNK_OVERLAP_CHARS if i + 1 < len(offsets) else len(text)
             end_off = min(end_off, start_off + self.MAX_CHUNK_CHARS + self.CHUNK_OVERLAP_CHARS, len(text))
-            chunk = text[start_off:end_off]
-            if not chunk.strip():
+            chunk_bounds.append((start_off, end_off))
+
+        all_spans: list[Span] = []
+        seen: set[tuple[int, int, str]] = set()
+        for batch_start in range(0, len(chunk_bounds), self.PIPELINE_BATCH_SIZE):
+            batch_bounds = chunk_bounds[batch_start : batch_start + self.PIPELINE_BATCH_SIZE]
+            batch_chunks = [text[s:e] for s, e in batch_bounds]
+            # Skip whitespace-only chunks, but keep bounds/chunks aligned
+            # by index so batch_bounds[j] still matches batch_results[j]
+            # below (the pipeline is only ever given the non-blank ones).
+            non_blank_idx = [j for j, c in enumerate(batch_chunks) if c.strip()]
+            if not non_blank_idx:
                 continue
-            for ent in self._pipeline(chunk):
-                category = _LABEL_TO_CATEGORY.get(ent["entity_group"])
-                if category is None:
-                    continue
-                start, end = start_off + int(ent["start"]), start_off + int(ent["end"])
-                # BPE token offsets can include a leading/trailing space
-                # (e.g. " Alice" tokenizes with the space attached). Trim
-                # it off the span itself: ContextMap.pseudonymise() strips
-                # the value it stores, so an untrimmed span would redact
-                # the space out of the text but never restore it on
-                # deredact. Trimming here keeps span.text == text[start:end]
-                # exactly equal to what gets stored, both ways.
-                while start < end and text[start].isspace():
-                    start += 1
-                while end > start and text[end - 1].isspace():
-                    end -= 1
-                if start >= end:
-                    continue
-                key = (start, end, category)
-                if key in seen:
-                    continue  # same span re-detected via chunk overlap
-                seen.add(key)
-                all_spans.append(Span(start, end, category, text[start:end]))
+            non_blank_chunks = [batch_chunks[j] for j in non_blank_idx]
+            # One call on a list -> one batched forward pass instead of
+            # len(non_blank_chunks) separate ones. Falls back to the
+            # original per-chunk loop transparently if this pipeline
+            # version/model doesn't support list input for some reason.
+            try:
+                batch_results = self._pipeline(non_blank_chunks)
+            except Exception:
+                batch_results = [self._pipeline(c) for c in non_blank_chunks]
+
+            for j, entities in zip(non_blank_idx, batch_results):
+                start_off, _ = batch_bounds[j]
+                for ent in entities:
+                    # min_score was accepted by __init__ but never actually
+                    # applied — found while testing the batching change
+                    # above: a low-confidence false positive ("Profit"
+                    # tagged private_person at score 0.59) was passing
+                    # straight through. This only drops spans *below* the
+                    # threshold the caller already asked for; it can't
+                    # suppress a genuine high-confidence PII hit.
+                    if ent["score"] < self.min_score:
+                        continue
+                    category = _LABEL_TO_CATEGORY.get(ent["entity_group"])
+                    if category is None:
+                        continue
+                    start, end = start_off + int(ent["start"]), start_off + int(ent["end"])
+                    # BPE token offsets can include a leading/trailing space
+                    # (e.g. " Alice" tokenizes with the space attached). Trim
+                    # it off the span itself: ContextMap.pseudonymise() strips
+                    # the value it stores, so an untrimmed span would redact
+                    # the space out of the text but never restore it on
+                    # deredact. Trimming here keeps span.text == text[start:end]
+                    # exactly equal to what gets stored, both ways.
+                    while start < end and text[start].isspace():
+                        start += 1
+                    while end > start and text[end - 1].isspace():
+                        end -= 1
+                    if start >= end:
+                        continue
+                    key = (start, end, category)
+                    if key in seen:
+                        continue  # same span re-detected via chunk overlap
+                    seen.add(key)
+                    all_spans.append(Span(start, end, category, text[start:end]))
 
         all_spans.sort(key=lambda s: s.start)
 
