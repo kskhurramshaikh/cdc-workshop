@@ -1,0 +1,17 @@
+# PyPI's latest transformers release does not yet recognize the
+# "openai_privacy_filter" architecture (confirmed during benchmarking —
+# see docs/architecture-sizing.md). Installing from the git main branch
+# is required until that architecture lands in a PyPI release; re-pin to
+# a released version once it does, to avoid depending on a moving target.
+git+https://github.com/huggingface/transformers.git
+torch
+accelerate
+safetensors
+fastapi
+uvicorn[standard]
+pydantic
+
+# Local package (Layer 1 + Layer 2 filter logic). Render's build runs
+# from the repo root (see render.yaml rootDir), so this relative path
+# resolves to ../cdc-privacy-filter.
+-e ../cdc-privacy-filter

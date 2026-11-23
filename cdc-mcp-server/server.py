@@ -59,10 +59,29 @@ _context_map = ContextMap()
 #   Pakistan-specific structured identifiers (IBAN, NTN, CNIC, account
 #   numbers, known fund/broker names) the general model was never trained
 #   to recognise as such.
-# Set CDC_DISABLE_PII_MODEL=1 to skip loading Layer 1 (e.g. for a quick
-# regex-only smoke test, or a machine without torch/transformers) — Layer
-# 2 keeps working on its own either way.
-if os.environ.get("CDC_DISABLE_PII_MODEL") == "1":
+# Render hosting (workshop stand-in for an on-prem deployment): if set,
+# both privacy-filter layers run on Render instead of in this process —
+# _redact() calls out to /detect for span detection and applies the
+# pseudonym substitution locally via _privacy_filter.apply_spans(), so
+# the ContextMap (the only place real PII<->pseudonym mappings live)
+# never leaves this machine. Unset (the default) keeps everything local,
+# exactly as before this was added.
+_RENDER_URL = os.environ.get("RENDER_PRIVACY_FILTER_URL")
+_RENDER_API_KEY = os.environ.get("PRIVACY_FILTER_API_KEY")
+if _RENDER_URL:
+    from remote_detector import RemoteDetectionError, detect_remote  # noqa: E402
+
+# Set CDC_DISABLE_PII_MODEL=1 to skip loading Layer 1 locally (e.g. for a
+# quick regex-only smoke test, or a machine without torch/transformers)
+# — Layer 2 keeps working on its own either way. When RENDER_PRIVACY_FILTER_URL
+# is set, Layer 1 runs on Render instead, so there is no reason for this
+# process to also load the ~2.8GB model locally — that would double the
+# memory/download cost for no benefit, since _redact() below never calls
+# the local model backend in that case.
+if _RENDER_URL:
+    _model_backend = NoOpModelBackend()
+    print(f"[cdc-mcp-server] Privacy filter hosted on Render: {_RENDER_URL} — local model not loaded.", file=sys.stderr)
+elif os.environ.get("CDC_DISABLE_PII_MODEL") == "1":
     _model_backend = NoOpModelBackend()
     print("[cdc-mcp-server] CDC_DISABLE_PII_MODEL=1 — Layer 1 (model) skipped, regex-only.", file=sys.stderr)
 else:
@@ -95,6 +114,20 @@ _bill_text_cache: dict[str, tuple[float, int, str]] = {}
 
 
 def _redact(text: str) -> str:
+    if _RENDER_URL:
+        try:
+            spans = detect_remote(text, _RENDER_URL, _RENDER_API_KEY)
+            return _privacy_filter.apply_spans(text, spans)
+        except RemoteDetectionError as exc:
+            # Fail closed, not open: if Render is unreachable we do NOT
+            # silently fall back to local detection, because that would
+            # mean a server advertised as "redaction via Render" quietly
+            # redacted locally instead with no signal to the operator.
+            # Surface the error so the caller sees the tool call fail
+            # rather than getting text that was redacted a different way
+            # than configured.
+            print(f"[cdc-mcp-server] Render detection failed: {exc}", file=sys.stderr)
+            raise
     return _privacy_filter.redact(text)
 
 

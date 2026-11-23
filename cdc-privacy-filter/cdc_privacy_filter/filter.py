@@ -82,10 +82,23 @@ class PrivacyFilter:
         spans.sort(key=lambda s: s.start)
         return spans
 
-    def redact(self, text: str) -> str:
-        """Return text with every detected PII span replaced by a stable
-        pseudonym token, e.g. [IBAN_001], [NTN_002], [BROKER_003]."""
-        spans = self._collect_spans(text)
+    def collect_spans(self, text: str) -> list[Span]:
+        """Public entry point for Layer 1 + Layer 2 PII span detection,
+        with no ContextMap side effects — used by the Render-hosted
+        detection service, which has no business holding real-value
+        pseudonym mappings. The caller (the local MCP server, which does
+        own a ContextMap) turns these spans into pseudonym substitutions
+        itself via its own context_map.pseudonymise()."""
+        return self._collect_spans(text)
+
+    def apply_spans(self, text: str, spans: list[Span]) -> str:
+        """Substitute pseudonyms for already-detected spans, via this
+        filter's own ContextMap. Split out from redact() so spans found
+        remotely (e.g. by the Render-hosted detection service, which
+        holds no ContextMap of its own) can be applied locally without
+        ever sending pseudonym mappings off this machine. Spans must be
+        pre-sorted by start (as both _collect_spans() and the remote
+        /detect endpoint already return them)."""
         if not spans:
             return text
 
@@ -98,6 +111,11 @@ class PrivacyFilter:
             cursor = span.end
         out.append(text[cursor:])
         return "".join(out)
+
+    def redact(self, text: str) -> str:
+        """Return text with every detected PII span replaced by a stable
+        pseudonym token, e.g. [IBAN_001], [NTN_002], [BROKER_003]."""
+        return self.apply_spans(text, self._collect_spans(text))
 
     # -- de-redaction ---------------------------------------------------
 
