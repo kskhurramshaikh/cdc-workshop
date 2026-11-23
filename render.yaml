@@ -8,21 +8,29 @@
 #
 # NOTE ON SIZING: the real OpenAI Privacy Filter weights are ~2.8GB
 # (bf16) and torch/transformers add meaningful overhead on top of that.
-# "standard" (1 CPU / 2GB RAM, $25/mo) is the workshop-stage choice —
-# cost-conscious, and tight but workable for a single model instance
-# with no concurrent batch load. Bump to "pro" (2 CPU / 4GB, $85/mo) if
-# the service OOMs, or once concurrent-request throughput for real
-# client load matters (see docs/architecture-sizing.md for the
-# throughput-per-core numbers this is based on). Render has no GPU
+# "pro" (2 CPU / 4GB RAM, $85/mo) is the confirmed-necessary floor —
+# live-tested on "standard" (1 CPU / 2GB) first: idle memory alone sat
+# at 1.6-1.9GB out of the 2GB cap, and under real load even a single
+# detect_pii call on a short sentence took ~19-20s (vs ~1.2s in the
+# sandbox benchmark), consistent with memory pressure/thrashing, not a
+# code bug — see docs/architecture-sizing.md. Render has no GPU
 # web-service instance type as of this writing, which is consistent
 # with our CPU-first architecture decision — but it does mean the
 # GPU-batch-throughput open item in architecture-sizing.md can't be
 # validated on Render itself.
+#
+# COST: Render has no serverless/scale-to-zero tier for a long-running
+# service like this (only the Free tier auto-sleeps, and Workflows
+# bill per task-run) — compute is billed prorated to the second while
+# the service is live. To avoid paying for idle time between workshop
+# sessions, suspend this service in the Render dashboard when it's not
+# actively being used, and resume it (allow a few minutes for cold
+# start + model reload) before the next session.
 services:
   - type: web
     name: sarhad-privacy-filter
     runtime: python
-    plan: standard
+    plan: pro
     region: oregon
     rootDir: render-service
     buildCommand: pip install -r requirements.txt
