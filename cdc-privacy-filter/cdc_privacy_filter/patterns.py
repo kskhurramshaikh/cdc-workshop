@@ -47,18 +47,26 @@ CNIC_RE = re.compile(r"\b\d{5}-\d{7}-\d\b|\b\d{13}\b")
 #   Account No :     0501-195629-0450-00
 #   Account No:      1081032827497015
 #   90006930000036   (bare, following "Account #:")
+#   Account Statement             2013635849   (U Microfinance's own
+#     header line prints the account number right after the document
+#     title, no "No"/"#" in between)
+#   To A/c PKR1536000010024                    (BOK transfer narration —
+#     "A/c" label, PKR currency code glued directly onto the digits)
+#   Acc.No : ...                               (seen abbreviated this way
+#     in a couple of UC2 transfer-in/out narrations)
 #
 # Real bank statements (e.g. the ZTBL/BOP corpus) also repeat the account
 # number many times on later lines with NO "Account" label nearby at all
 # (e.g. inside a transaction table, or embedded as the trailing 16 digits
-# of an IBAN that itself only appears once). Group 2 is a label-free
-# fallback: a standalone 14-18 digit run (the observed CDC/bank account
-# number length range) that is NOT part of a longer digit run — the
-# lookaround asserts nothing digit/punctuation-joined sits immediately
+# of an IBAN that itself only appears once). The final alternative is a
+# label-free fallback: a standalone 14-18 digit run (the observed CDC/bank
+# account number length range) that is NOT part of a longer digit run —
+# the lookaround asserts nothing digit/punctuation-joined sits immediately
 # before or after, so it can't clip a longer number or a smaller one
 # already caught by CNIC_RE (13 digits) or PHONE_RE.
 ACCOUNT_NO_RE = re.compile(
-    r"\bAccount\s*(?:No\.?|#)?\s*[:.]?\s*((?:\d{2,8}-){1,3}\d{2,8}|\d{6,20})"
+    r"\b(?:Account(?:\s+Statement)?|A/c|Acc\.?\s*No\.?)"
+    r"\s*(?:No\.?|#)?\s*[:.\-]?\s*(?:PKR\s*)?((?:\d{2,8}-){1,3}\d{2,8}|\d{6,20})"
     r"|(?<![\w.,-])((?:\d{2,8}-){1,3}\d{2,8}|\d{14,18})(?![\w.,-])",
     re.IGNORECASE,
 )
@@ -97,7 +105,13 @@ DATE_RE = re.compile(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{4}\b")
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 MONTH_DATE_RE = re.compile(
     rf"\b{_MONTH}\s+\d{{1,2}},?\s+\d{{4}}\b"       # September 1, 2025
-    rf"|\b\d{{1,2}}\s+{_MONTH},?\s+\d{{4}}\b",     # 01 OCT 2026 / 5 October 2026
+    rf"|\b\d{{1,2}}\s+{_MONTH},?\s+\d{{4}}\b"      # 01 OCT 2026 / 5 October 2026
+    rf"|\b\d{{1,2}}-{_MONTH}-\d{{2,4}}\b",         # 23-SEP-26 (ZTBL's own
+    # hyphenated, abbreviated-month, 2-digit-year statement format —
+    # found via the live UC2 statement sweep leaking plaintext in
+    # "Opening/Closing Balance as on : 23-SEP-26" since neither the
+    # purely-numeric DATE_RE (no month names) nor the space-separated
+    # word-format alternatives above (no hyphens) covered it.
     re.IGNORECASE,
 )
 
@@ -183,7 +197,24 @@ KNOWN_FUND_NAMES = [
     "NIT Islamic Money Market Fund",  # full form seen in NBP's statement;
                                        # amc_info.json only has the short
                                        # code "NITIMMF" for this one
+    "NIT Social Impact",  # seen in ABHI Microfinance's "Abhi Micro nit
+                           # social" statement ("CDC TRUSTEE NIT SOCIAL
+                           # IMPACT"); not in amc_info.json at all — a
+                           # UC2-only fund not covered by the UC1 AMC list
+    "AWT Islamic Income Fund",  # full form seen in BOP's "AWTIIF"
+                                 # statement ("CDC TRUSTEE AWT ISLAMIC
+                                 # INCOME FUND"); amc_info.json only has
+                                 # the short code "AWTIIF" for this one
     "MCB Alhamra KPK Govt Employee",
+    # The three "Pension Fund ... Sub Fund" entries below are BOK's own
+    # pension sub-fund titles (not in amc_info.json, UC2-only) — each
+    # bank-statement template glues different words together with no
+    # space, confirmed in the raw PDFs (not an extraction artifact), so
+    # each glued form needs its own literal entry rather than one that
+    # would only match the unglued version.
+    "Pension Fund Debt Sub Fund",
+    "Pension Fund Equity IndexSub Fund",  # "Index"+"Sub" glued
+    "Pension Fund Equity Subfund",        # "Sub"+"Fund" glued
     "NIT ASSET ALLOCA",   # truncated; no full spelled form in amc_info.json
     "NIT KP ISLAMIC PE",  # truncated; no full spelled form in amc_info.json
     # BOK's statement template runs "TRUSTEE" straight into the fund name

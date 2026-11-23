@@ -281,3 +281,71 @@ def test_no_pii_left_behind_sweep():
     redacted = pf.redact(BANK_STATEMENT_EXCERPT + ABHI_EXCERPT)
     for leaked in ("PK38NBPA", "PK04ABHI", "3002200677", "0501-195629-0450-00"):
         assert leaked not in redacted
+
+
+# Found via a live, full-corpus UC2 sweep (all 20 real bank statements)
+# that ran *after* Bug 3's initial fix — a second pass over genuine fund
+# names, a date format, and account-number labels the first fix still
+# missed. Each excerpt below is the exact raw shape seen in a real
+# statement.
+HYPHENATED_SHORT_DATE_EXCERPT = (
+    "Closing Balance as on :   23-SEP-26               1,701,127.88"
+)
+NEW_UC2_FUND_NAMES_EXCERPT = (
+    "CDC TRUSTEE NIT SOCIAL IMPACT\n"
+    "CDC TRUSTEE AWT ISLAMIC INCOME FUND\n"
+    "PENSION FUND DEBT SUB FUND\n"
+    "PENSION FUND EQUITY INDEXSUB FUND\n"
+    "PENSION FUND EQUITY SUBFUND"
+)
+LABELED_ACCOUNT_NO_VARIANTS_EXCERPT = (
+    "Chq: 55669202 To A/c PKR1536000010024\n"
+    "Account Statement             2013635849\n"
+    "From Acc.No. - 2001050705"
+)
+
+
+def test_hyphenated_short_year_dates_redacted():
+    """ZTBL's own 'DD-MON-YY' statement date format (e.g. '23-SEP-26')
+    is neither purely numeric (DATE_RE) nor space-separated
+    (MONTH_DATE_RE's existing alternatives), so it leaked in full until
+    a third MONTH_DATE_RE alternative was added for it."""
+    pf = _fresh_filter()
+    redacted = pf.redact(HYPHENATED_SHORT_DATE_EXCERPT)
+    assert "23-SEP-26" not in redacted
+    assert "[DATE_" in redacted
+    assert pf.deredact(redacted) == HYPHENATED_SHORT_DATE_EXCERPT
+
+
+def test_second_pass_uc2_fund_names_redacted():
+    """UC2 fund names found leaking in a live full-corpus sweep after
+    Bug 3's first fix: NIT Social Impact and AWT Islamic Income Fund
+    (neither in amc_info.json, so not caught by the first pass at all),
+    plus three BOK pension sub-fund titles, two of which are glued
+    differently by that bank's own statement template."""
+    pf = _fresh_filter()
+    redacted = pf.redact(NEW_UC2_FUND_NAMES_EXCERPT)
+    assert redacted.count("[FUND_") == 5
+    for leaked in (
+        "NIT SOCIAL IMPACT",
+        "AWT ISLAMIC INCOME FUND",
+        "PENSION FUND DEBT SUB FUND",
+        "PENSION FUND EQUITY INDEXSUB FUND",
+        "PENSION FUND EQUITY SUBFUND",
+    ):
+        assert leaked not in redacted
+
+
+def test_labeled_account_number_variants_redacted():
+    """Three label shapes ACCOUNT_NO_RE's original literal-'Account'-only
+    match missed: U Microfinance's 'Account Statement <digits>' header,
+    BOK's 'To A/c PKR<digits>' transfer narration (PKR itself is just a
+    currency code, not sensitive, so it's fine left visible), and the
+    abbreviated 'Acc.No. - <digits>' label."""
+    pf = _fresh_filter()
+    redacted = pf.redact(LABELED_ACCOUNT_NO_VARIANTS_EXCERPT)
+    assert "1536000010024" not in redacted
+    assert "2013635849" not in redacted
+    assert "2001050705" not in redacted
+    assert redacted.count("[ACCOUNT_NO_") == 3
+    assert pf.deredact(redacted) == LABELED_ACCOUNT_NO_VARIANTS_EXCERPT
