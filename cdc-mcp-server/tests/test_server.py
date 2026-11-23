@@ -6,6 +6,7 @@ Run with CDC_DISABLE_PII_MODEL=1 for a fast, deterministic regex-only pass
 care about de-redaction/ContextMap behaviour, not detection).
 """
 
+import json
 import os
 import sys
 
@@ -146,6 +147,50 @@ def test_statement_cache_returns_identical_text_and_is_populated(monkeypatch, tm
     assert "[NTN_001]" in first
     assert calls["extract"] == 1, "second call should not re-extract"
     assert calls["redact"] == 1, "second call should not re-redact"
+
+
+def test_prewarm_populates_cache_only_for_large_documents(monkeypatch, tmp_path):
+    """_prewarm_large_documents must populate the cache for a document
+    above _PREWARM_SIZE_THRESHOLD and leave a small document alone —
+    this is the fix for the first read_bank_statement call after a
+    restart (empty cache) paying the full extract+Layer-1 cost live
+    and potentially timing out, e.g. on the real "ZTBL" statement."""
+    base = tmp_path
+    uc1_bills = base / "mock_data" / "uc1" / "bills"
+    uc2_statements = base / "mock_data" / "uc2" / "statements"
+    uc1_bills.mkdir(parents=True)
+    uc2_statements.mkdir(parents=True)
+    (base / "mock_data" / "uc1" / "bills_index.json").write_text(
+        json.dumps([{"bill_id": "BIG-BILL", "file": "big.pdf"}])
+    )
+    (base / "mock_data" / "uc2" / "statements_index.json").write_text(
+        json.dumps(
+            [
+                {"statement_id": "BIG-STMT", "file": "big.pdf"},
+                {"statement_id": "SMALL-STMT", "file": "small.pdf"},
+            ]
+        )
+    )
+    (uc1_bills / "big.pdf").write_bytes(b"x" * (server._PREWARM_SIZE_THRESHOLD + 1))
+    (uc2_statements / "big.pdf").write_bytes(b"x" * (server._PREWARM_SIZE_THRESHOLD + 1))
+    (uc2_statements / "small.pdf").write_bytes(b"x" * 10)
+
+    monkeypatch.setattr(server, "BASE", base)
+    monkeypatch.setattr(server, "UC1_BILLS", uc1_bills)
+    monkeypatch.setattr(server, "UC2_STATEMENTS", uc2_statements)
+    monkeypatch.setattr(server, "extract_text", lambda path: f"text for {path.name}")
+    monkeypatch.setattr(server, "_redact", lambda t: t)
+
+    bill_cache: dict = {}
+    statement_cache: dict = {}
+    monkeypatch.setattr(server, "_bill_text_cache", bill_cache)
+    monkeypatch.setattr(server, "_statement_text_cache", statement_cache)
+
+    server._prewarm_large_documents()
+
+    assert "BIG-BILL" in bill_cache
+    assert "BIG-STMT" in statement_cache
+    assert "SMALL-STMT" not in statement_cache
 
 
 def test_statement_cache_invalidates_on_source_file_change(monkeypatch, tmp_path):

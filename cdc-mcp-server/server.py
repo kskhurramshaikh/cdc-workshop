@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -392,5 +393,57 @@ def write_fms_reconciliation_file(
     }
 
 
+# Documents above this size get their extract+redact work done proactively
+# at server startup instead of lazily on first request. Same ballpark as
+# the "ZTBL" statement (664KB) that was more than 2x any other UC2
+# statement and consistently exceeded the device bridge's ~80s RPC window
+# on its first (uncached) read. Without pre-warming, _extract_and_redact_
+# cached() still protects every *retry*, but the very first caller after
+# a server restart still pays the full cost live and can time out. Set
+# CDC_DISABLE_PREWARM=1 to skip this (e.g. for a quick local smoke test
+# where a slower-but-eventually-correct first call doesn't matter).
+_PREWARM_SIZE_THRESHOLD = 400_000  # bytes
+
+
+def _prewarm_large_documents() -> None:
+    """Populate _bill_text_cache/_statement_text_cache for any document
+    whose PDF exceeds _PREWARM_SIZE_THRESHOLD, so the first real
+    read_bank_statement/read_broker_bill call for it already hits the
+    cache instead of doing full PDF-extraction + Layer-1 inference
+    inside a live, time-limited request. Intended to run in a background
+    thread at startup: never blocks the server from accepting requests,
+    and any failure here is logged and swallowed rather than raised,
+    since a pre-warm problem must never prevent the server itself from
+    starting."""
+    try:
+        bills_index = json.loads((BASE / "mock_data" / "uc1" / "bills_index.json").read_text())
+        for rec in bills_index:
+            pdf_path = UC1_BILLS / rec["file"]
+            if pdf_path.exists() and pdf_path.stat().st_size > _PREWARM_SIZE_THRESHOLD:
+                print(
+                    f"[cdc-mcp-server] pre-warming bill cache: {rec['bill_id']} "
+                    f"({pdf_path.stat().st_size} bytes)",
+                    file=sys.stderr,
+                )
+                _extract_and_redact_cached(_bill_text_cache, rec["bill_id"], pdf_path)
+
+        statements_index = json.loads((BASE / "mock_data" / "uc2" / "statements_index.json").read_text())
+        for rec in statements_index:
+            pdf_path = UC2_STATEMENTS / rec["file"]
+            if pdf_path.exists() and pdf_path.stat().st_size > _PREWARM_SIZE_THRESHOLD:
+                print(
+                    f"[cdc-mcp-server] pre-warming statement cache: {rec['statement_id']} "
+                    f"({pdf_path.stat().st_size} bytes)",
+                    file=sys.stderr,
+                )
+                _extract_and_redact_cached(_statement_text_cache, rec["statement_id"], pdf_path)
+
+        print("[cdc-mcp-server] pre-warm complete.", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - pre-warm is best-effort, never fatal
+        print(f"[cdc-mcp-server] pre-warm failed (non-fatal): {exc!r}", file=sys.stderr)
+
+
 if __name__ == "__main__":
+    if os.environ.get("CDC_DISABLE_PREWARM") != "1":
+        threading.Thread(target=_prewarm_large_documents, daemon=True, name="cdc-prewarm").start()
     mcp.run()
