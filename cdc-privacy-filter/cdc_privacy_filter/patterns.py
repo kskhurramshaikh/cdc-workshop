@@ -153,20 +153,54 @@ URL_RE = re.compile(
 
 # CDC trustee / fund titles — pseudonymised as commercially sensitive data,
 # not because they are personal PII. Extend this list as new funds appear.
+# Full names below are taken verbatim from CDC's own amc_info.json
+# (fund_codes), the authoritative source for fund naming in this corpus —
+# not guessed from the truncated/glued forms the bank statements print.
+#
+# Entries are kept prefix-independent of the "CDC TRUSTEE" / "CDC-TRUSTEE" /
+# "CDCTrustee" / "CDCTRUSTEE" boilerplate on purpose — that prefix is not
+# identifying (every one of these accounts has CDC as trustee) and its
+# spelling/punctuation varies per bank's statement template (confirmed via
+# the live UC2 statement sweep: "CDC TRUSTEE ASKARI HIGH YIELD SCHEME" as a
+# literal string silently failed to match ZTBL's own "CDC-TRUSTEE ASKARI
+# HIGH YIELD SCHEME" — hyphen vs. space — leaking the fund name in full).
+# Several bank statement templates also hard-truncate the customer-title
+# field at a fixed column width (confirmed in the PDFs themselves, not an
+# extraction artifact — e.g. "...NIT KP ISLAMIC PE", "...NIT ASSET ALLOCA" —
+# amc_info.json has no untruncated spelled-out form for these two, only the
+# short fund_codes "NITKPIPF"/"NITAAF", so the literal truncated fragment
+# is the only reachable match for them). longest-first matching in
+# build_name_pattern() prefers the full form whenever it's present.
 KNOWN_FUND_NAMES = [
     "Dedicated Stock Fund", "DSF",
     "Cash Fund",
-    "CDC TRUSTEE ASKARI HIGH YIELD SCHEME",
-    "CDC TRUSTEE PAK QATAR CASH PLAN",
-    "CDC-TRUSTE NIT ISLAMIC MONEY MARKET FUND",
-    "PAK QATAR GOKP ISLAMIC",
-    "NIT INCOME FUND",
+    "Askari High Yield Scheme", "Askari High Yield",  # 2nd: U-Micro's "...Sch" truncation
+    "Askari Sovereign Yield Enhancer", "Askari Sovereign Yield",  # 2nd: "...Yield" truncation
+    "Askari Sovereign Cash Fund",
+    "Pak Qatar Cash Plan",
+    "Pak Qatar GOKP Islamic",
+    "NIT Income Fund",
+    "NIT Islamic Money Market Fund",  # full form seen in NBP's statement;
+                                       # amc_info.json only has the short
+                                       # code "NITIMMF" for this one
+    "MCB Alhamra KPK Govt Employee",
+    "NIT ASSET ALLOCA",   # truncated; no full spelled form in amc_info.json
+    "NIT KP ISLAMIC PE",  # truncated; no full spelled form in amc_info.json
+    # BOK's statement template runs "TRUSTEE" straight into the fund name
+    # with no space ("CDC TRUSTEEMCB ALHAMRA...", confirmed in the PDF
+    # itself, not an extraction artifact) — build_name_pattern()'s \b
+    # boundary can't start a match mid-word, so the literal has to include
+    # the glued "TRUSTEEMCB" run to be reachable at all.
+    "TRUSTEEMCB ALHAMRA KPK GOVT EMPLOYEE",
     "NITKPIPF",
     "NITIF", "NITSIF", "NITAAF", "NITIMMF",
     "AWTIIF",
 ]
 
-# Broker / AMC names seen across the 30 sample bills.
+# Broker / AMC names seen across the 30 sample bills and 20 bank
+# statements. The AMC names (amc_info.json's amc_name field) are listed
+# here rather than in KNOWN_FUND_NAMES because this list's own header
+# comment already scopes it to "Broker / AMC names".
 KNOWN_BROKER_NAMES = [
     "ABA Ali Habib Securities",
     "Al Habib Capital Markets",
@@ -181,6 +215,11 @@ KNOWN_BROKER_NAMES = [
     "Next Capital",
     "BMA Capital Management",
     "Shajar Capital Pakistan",
+    "National Investment Trust Limited",
+    "Askari Investment Management Limited",
+    "Pak Qatar Asset Management Company",
+    "MCB Investment Management Limited",
+    "Bank of Punjab Asset Management",
 ]
 
 # Ordered list of (category, pattern) for the deterministic scan.
