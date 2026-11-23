@@ -15,6 +15,7 @@ unchanged.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -110,8 +111,74 @@ mcp = FastMCP("cdc-workshop")
 # and could time out again forever. With it, the first call's result
 # lands in the cache the moment it finishes (even if that caller never
 # saw it), and a retry a few seconds later returns instantly.
-_statement_text_cache: dict[str, tuple[float, int, str]] = {}
-_bill_text_cache: dict[str, tuple[float, int, str]] = {}
+class _CoalescingCache:
+    """A (mtime, size)-versioned cache that also coalesces concurrent
+    callers for the same key, so a retry joins the one computation
+    already running instead of starting a second, fully independent
+    copy of it.
+
+    Why this exists: the plain dict cache below only remembers a
+    *finished* result. It does nothing for a caller that arrives while
+    an earlier call for the same key is still computing — e.g. a
+    document whose redaction genuinely takes longer than the device
+    bridge's ~80s RPC window, so the caller's RPC times out and it
+    retries. FastMCP does not cancel the still-running first attempt,
+    and the plain cache gives a retry no way to notice that work is
+    already in flight, so it just starts a second, fully redundant
+    pass over the same document. Because the persistent Sarhad
+    connection (remote_detector.py) serves one detect_pii call at a
+    time off a single queue, those duplicate passes don't run in
+    parallel — they queue up and run one after another, so the Nth
+    retry has to wait for every earlier (wasted) attempt to finish
+    before it even starts its own. This is what turned a single large
+    statement (ZTBL, 664KB) into a string of ~90-100s duplicate
+    passes instead of one.
+
+    With this, a second caller for a key that's still being computed
+    blocks on the *same* in-progress Future and gets the first
+    caller's result directly — no duplicate work, no queue pile-up.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._done: dict[str, tuple[float, int, object]] = {}
+        self._inflight: dict[str, concurrent.futures.Future] = {}
+
+    def get_or_compute(self, key: str, version: tuple[float, int], compute_fn):
+        with self._lock:
+            cached = self._done.get(key)
+            if cached is not None and (cached[0], cached[1]) == version:
+                return cached[2]
+            fut = self._inflight.get(key)
+            if fut is not None:
+                owner = False
+            else:
+                fut = concurrent.futures.Future()
+                self._inflight[key] = fut
+                owner = True
+
+        if not owner:
+            # Someone else is already computing this exact key — wait
+            # on their result instead of recomputing it ourselves.
+            return fut.result()
+
+        try:
+            result = compute_fn()
+        except BaseException as exc:
+            with self._lock:
+                self._inflight.pop(key, None)
+            fut.set_exception(exc)
+            raise
+        else:
+            with self._lock:
+                self._done[key] = (version[0], version[1], result)
+                self._inflight.pop(key, None)
+            fut.set_result(result)
+            return result
+
+
+_statement_text_cache = _CoalescingCache()
+_bill_text_cache = _CoalescingCache()
 
 # Same idea as the PDF cache above, for the small static JSON mock-data
 # files (bills_index, liability_export, statements_index, accounts_detail,
@@ -128,26 +195,26 @@ _bill_text_cache: dict[str, tuple[float, int, str]] = {}
 # pile up. This is what turned get_accounts_detail (20 small JSON rows)
 # into a 20+ minute operation under repeated retries: not bulk PDF work,
 # just the same tiny redaction job being redone again and again with no
-# cache to short-circuit it. Caching the fully-redacted result, keyed on
-# the source file's (mtime, size), means every call after the first —
-# including a caller's own retry — returns instantly.
-_json_record_cache: dict[str, tuple[float, int, object]] = {}
+# cache to short-circuit it. Using _CoalescingCache (see above) rather
+# than a plain dict means this is also safe for a *slow* single
+# document (e.g. read_bank_statement on a large PDF): a retry joins the
+# one computation already running instead of adding another to the
+# queue.
+_json_record_cache = _CoalescingCache()
 
 
 def _redact_json_records_cached(cache_key: str, path: Path, redact_fn):
     """Load path's JSON once, run redact_fn(rows) once, and cache the
     result under cache_key — keyed on path's (mtime, size) so editing
-    the mock file invalidates its own entry automatically."""
+    the mock file invalidates its own entry automatically. Concurrent/
+    retried calls for the same cache_key coalesce onto one computation
+    (see _CoalescingCache)."""
     stat = path.stat()
-    key = (stat.st_mtime, stat.st_size)
-    cached = _json_record_cache.get(cache_key)
-    if cached is not None and (cached[0], cached[1]) == key:
-        return cached[2]
-
-    rows = json.loads(path.read_text())
-    redacted = redact_fn(rows)
-    _json_record_cache[cache_key] = (key[0], key[1], redacted)
-    return redacted
+    return _json_record_cache.get_or_compute(
+        cache_key,
+        (stat.st_mtime, stat.st_size),
+        lambda: redact_fn(json.loads(path.read_text())),
+    )
 
 
 def _redact(text: str) -> str:
@@ -173,21 +240,20 @@ def _deredact(text: str) -> str:
 
 
 def _extract_and_redact_cached(
-    cache: dict[str, tuple[float, int, str]], doc_id: str, pdf_path: Path
+    cache: "_CoalescingCache", doc_id: str, pdf_path: Path
 ) -> str:
     """extract_text() + _redact(), cached per doc_id for this process's
     lifetime. Keyed on the source file's (mtime, size) so editing/
-    replacing a mock PDF invalidates its own cache entry automatically."""
+    replacing a mock PDF invalidates its own cache entry automatically.
+    Concurrent/retried calls for the same doc_id coalesce onto one
+    computation (see _CoalescingCache) instead of each paying the full
+    extract+redact cost independently."""
     stat = pdf_path.stat()
-    key = (stat.st_mtime, stat.st_size)
-    cached = cache.get(doc_id)
-    if cached is not None and (cached[0], cached[1]) == key:
-        return cached[2]
-
-    raw_text = extract_text(pdf_path)
-    redacted = _redact(raw_text)
-    cache[doc_id] = (key[0], key[1], redacted)
-    return redacted
+    return cache.get_or_compute(
+        doc_id,
+        (stat.st_mtime, stat.st_size),
+        lambda: _redact(extract_text(pdf_path)),
+    )
 
 
 # Pseudonym tokens look like [CATEGORY_NNN] (see ContextMap.pseudonymise).
