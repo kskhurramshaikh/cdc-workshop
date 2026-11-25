@@ -315,3 +315,126 @@ NAME_CANON = {
     "FUND": {n.lower(): n for n in KNOWN_FUND_NAMES},
     "BROKER": {n.lower(): n for n in KNOWN_BROKER_NAMES},
 }
+
+# ---------------------------------------------------------------------------
+# Context-anchored person-name fallback (Layer 2b) — added 2026-11-25 after
+# the live UC2 CDC workshop surfaced a genuine Layer 1 blind spot.
+#
+# What happened: short, extremely common Pakistani names (e.g. "Ahmed
+# Muhammad") sitting immediately after specific institutional/financial
+# phrases got ZERO entity spans from the Layer 1 model — not a
+# low-confidence miss, a complete miss (confirmed independently: the exact
+# same name scores 0.98-1.0 in isolation or in ordinary prose, but the
+# model emits no span at all for "PAY TO THE ORDER OF <name>" or "CDC
+# TRUSTEE <name> FUND ACCOUNT"). Root cause (best understanding, not
+# certain): the model has learned a strong prior that the slot after this
+# kind of boilerplate is normally an organisation, not a person — true
+# often enough in its training distribution that a short, two-token name
+# doesn't carry enough independent "this is a person" signal to override
+# it. Longer, more distinctive names (e.g. "Ahmed Khan Muhammad Awais")
+# were NOT missed, consistent with that theory.
+#
+# This means lowering min_score (see model_backend.py's own comment on
+# that) cannot fix this class of miss — there is no confidence score to
+# threshold on a span the model never emits. It's exactly the kind of
+# enumerable, structural pattern Layer 2 should own deterministically
+# instead of leaving to the model's judgment, same principle as every
+# other pattern in this file.
+#
+# Anchor phrases below were harvested from every UC1 broker bill and UC2
+# bank statement in the sample corpus, keeping spelling/abbreviation
+# variants because the same construct is spelled differently per
+# bank/broker template ("favour" vs "favor" vs "Fvg.", "CDC TRUSTEE" vs
+# "CDC-TRUSTEE" vs "CDCTRUSTEE" vs "CDC-TRUSTE" — the last two have no
+# space at all before the fund name, same lesson as KNOWN_FUND_NAMES'
+# own prefix-independence comment above). "pay to the order of" is kept
+# even though it wasn't observed in this specific 16-statement sample —
+# it's standard cheque-instrument language likely to appear in other
+# banks' templates CDC hasn't sent us yet.
+#
+# Design: anchor on the label, then take the capitalised word-run right
+# after it as a NAME CANDIDATE, trimmed to the longest leading run of
+# words that contains no organisation/place keyword (so "AHMED MUHAMMAD
+# FUND ACCOUNT" trims to "AHMED MUHAMMAD" once "FUND" is hit, rather than
+# being rejected outright or over-capturing the trailing boilerplate).
+#
+# Known limitation (documented, not a leak risk): if an organisation or
+# place name is NOT already in KNOWN_FUND_NAMES/KNOWN_BROKER_NAMES and
+# isn't caught by the keyword filter either (e.g. a short, unfamiliar
+# company name like "Itminds" with no corporate-suffix word attached),
+# this can mislabel it PERSON instead of ORG/BROKER. That's a
+# miscategorisation, not an under-redaction — the text still gets
+# pseudonymised either way — so it's the safe failure direction for a
+# privacy filter (over-redaction is an inconvenience; under-redaction is
+# a leak). Extend KNOWN_FUND_NAMES/KNOWN_BROKER_NAMES or
+# _ORG_OR_PLACE_KEYWORDS as new entities are observed to sharpen this
+# over time; this fallback is deliberately a blunt net, not a precise
+# classifier.
+CONTEXT_ANCHOR_RE = re.compile(
+    r"\b(?:"
+    r"pay\s+to\s+the\s+order\s+of"
+    r"|in\s+favou?r\s+of"
+    r"|fvg\.?"
+    r"|c/o"
+    r"|CDC[\s-]*TRUSTE(?:E)?"
+    r"|account\s+title\s*:?"
+    r"|account\s+description\s*:?"
+    r"|beneficiary(?:\s+name)?\s*:?"
+    r"|customer\s+name\s*:?"
+    r")\s*[:\-]?\s*",
+    re.IGNORECASE,
+)
+
+# A name candidate: 1-5 consecutive capitalised words (Title Case or ALL
+# CAPS, with an optional trailing period for initials), stopping at
+# digits, most punctuation, or a newline.
+_NAME_CANDIDATE_RE = re.compile(r"[A-Z][A-Za-z.]*(?:\s+[A-Z][A-Za-z.]*){0,4}")
+
+# Tokens that mean "this is an organisation/place/title, not a person" —
+# if the NEXT word in a candidate matches one of these (case-insensitive,
+# whole word), the candidate is truncated right before it rather than
+# rejected outright, so a genuine leading person-name prefix survives
+# even when it's followed by trailing institutional boilerplate.
+_ORG_OR_PLACE_KEYWORDS = {
+    "LTD", "LIMITED", "PVT", "PRIVATE", "PLC", "COMPANY", "CORP", "CORPORATION",
+    "FUND", "TRUSTEE", "TRUST", "BANK", "SECURITIES", "EXCHANGE", "COMMISSION",
+    "CAPITAL", "INVESTMENT", "INVESTMENTS", "ASSET", "ASSETS", "MANAGEMENT",
+    "MICROFINANCE", "ISLAMIC", "MUTUAL", "INCOME", "GROWTH", "EQUITY", "STOCK",
+    "MONEY", "CASH", "NIT", "GOVERNMENT", "GOVT", "DEPARTMENT", "MINISTRY",
+    "AUTHORITY", "BOARD", "INSTITUTE", "ASSOCIATION", "SOCIETY", "SCHEME",
+    "SUB", "SUBFUND", "ALLOCATION", "YIELD", "ENHANCER", "PENSION",
+    "HOUSE", "SHAHRA", "KARACHI", "LAHORE", "ISLAMABAD", "PAKISTAN",
+    "BLOCK", "ROAD", "STREET", "PLAZA", "FLOOR", "SCHEDULE", "SECTOR",
+    "HEAD", "OPERATIONS", "SETTLEMENT", "DEAR", "SIR", "MADAM", "REGARDS",
+}
+
+
+def find_contextual_person_spans(text: str) -> list[tuple[int, int, str]]:
+    """Find person-name candidates sitting immediately after a known
+    institutional anchor phrase (see CONTEXT_ANCHOR_RE's docstring for
+    the full root-cause writeup), trimmed to exclude trailing
+    organisation/place words. Returns (start, end, candidate_text)
+    tuples — filter.py wraps these as Spans with category "PERSON".
+    This is a deliberately blunt net, not a precise classifier; see the
+    "Known limitation" note above."""
+    results: list[tuple[int, int, str]] = []
+    for anchor in CONTEXT_ANCHOR_RE.finditer(text):
+        tail = text[anchor.end():anchor.end() + 80]  # room for a 5-word name
+        m = _NAME_CANDIDATE_RE.match(tail)
+        if not m:
+            continue
+        words = m.group(0).split()
+        kept: list[str] = []
+        for w in words:
+            if w.strip(".").upper() in _ORG_OR_PLACE_KEYWORDS:
+                break
+            kept.append(w)
+        if not kept:
+            continue
+        candidate = " ".join(kept)
+        if len(candidate) < 3:
+            continue
+        start = anchor.end() + m.start()
+        end = start + len(candidate)
+        results.append((start, end, candidate))
+    return results

@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from .context_map import ContextMap
 from .model_backend import ModelBackend, NoOpModelBackend, Span
-from .patterns import ACCOUNT_NO_RE, NAME_CANON, NAME_PATTERNS, STRUCTURED_PATTERNS
+from .patterns import (
+    ACCOUNT_NO_RE,
+    NAME_CANON,
+    NAME_PATTERNS,
+    STRUCTURED_PATTERNS,
+    find_contextual_person_spans,
+)
 
 
 class PrivacyFilter:
@@ -70,6 +76,25 @@ class PrivacyFilter:
                 canonical = NAME_CANON.get(category, {}).get(matched.lower(), matched)
                 spans.append(Span(start, end, category, canonical))
                 claimed.append((start, end))
+
+        # 2.5. Context-anchored person names (Layer 2b) — short/common
+        #      Pakistani names (e.g. "Ahmed Muhammad") that Layer 1 (the
+        #      model) misses ENTIRELY when they sit right after specific
+        #      institutional phrases ("PAY TO THE ORDER OF", "CDC TRUSTEE
+        #      ... FUND ACCOUNT", etc.) — see patterns.py's
+        #      find_contextual_person_spans() docstring for the full
+        #      root-cause writeup from the live UC2 workshop. Runs after
+        #      known fund/broker names (step 2) so a legitimate fund or
+        #      broker name sitting in one of these same slots is claimed
+        #      there first and never reaches here as a false PERSON tag;
+        #      runs before the model (step 3) so this deterministic catch
+        #      always wins on overlap, same "Layer 2 wins" convention as
+        #      every other pattern in this file.
+        for start, end, candidate in find_contextual_person_spans(text):
+            if overlaps(start, end):
+                continue
+            spans.append(Span(start, end, "PERSON", candidate))
+            claimed.append((start, end))
 
         # 3. Model backend (free-text names/addresses the regex layer
         #    can't reliably catch) — lowest priority, skip overlaps.
