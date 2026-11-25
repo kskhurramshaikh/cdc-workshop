@@ -395,12 +395,46 @@ CONTEXT_ANCHOR_RE = re.compile(
     r"|account\s+title\s*:?"
     r"|account\s+description\s*:?"
     r"|account\s+holder\s*:?"
+    # "beneficiary customer" (SWIFT field 59a) must be tried BEFORE the
+    # bare "beneficiary(?:\s+name)?" alternative below it: without this,
+    # "BENEFICIARY CUSTOMER: NAME" would match only "beneficiary " (the
+    # optional "(?:\s+name)?" group fails against "customer" and
+    # backtracks to zero-width), leaving "CUSTOMER:" unconsumed — and
+    # since "CUSTOMER" is itself a capitalised word, the name-candidate
+    # matcher would wrongly swallow it as the start of the "name"
+    # (fixed defensively too, by adding CUSTOMER/ORDERING/etc. to
+    # _ORG_OR_PLACE_KEYWORDS below, but matching the full label here is
+    # the correct fix, not just a safety net).
+    r"|beneficiary\s+customer\s*:?"
     r"|beneficiary(?:\s+name)?\s*:?"
     r"|customer\s+name\s*:?"
     r"|drawn\s+on\s+account\s+of"
     r"|attn\.?\s*:?"
     r"|remitted\s+by"
     r"|signed\s+by"
+    # Added from external research (not in CDC's own sample documents) —
+    # SWIFT MT103/ISO 20022 wire-transfer fields (field 50a Ordering
+    # Customer, "Originator", "Ultimate Beneficiary" — standard across
+    # global financial markets, not Pakistan-specific) and CDC/PSX's own
+    # account-opening/KYC form fields (Name of Nominee, Applicant Name,
+    # Investor/Sub-Account Holder, Joint Applicant/Holder, Next of Kin —
+    # from CDC's and partner brokers' published account-opening forms,
+    # a different CDC document type than the bank statements/broker
+    # bills this filter was originally built against). Deliberately NOT
+    # adding bare "Pay"/"Pay to" or "Account Payee" here: those are too
+    # generic on their own (e.g. "Pay Date:" would get its capitalised
+    # "Date" wrongly captured) and the false-positive risk outweighs the
+    # narrow cases they'd additionally catch beyond "pay to the order of".
+    r"|ordering\s+customer\s*:?"
+    r"|originator\s*:?"
+    r"|ultimate\s+beneficiary\s*:?"
+    r"|name\s+of\s+nominee\s*:?"
+    r"|applicant\s+name\s*:?"
+    r"|investor\s+account\s+holder\s*:?"
+    r"|sub-?\s*account\s+holder\s*:?"
+    r"|joint\s+applicant\s*:?"
+    r"|joint\s+holder\s*:?"
+    r"|next\s+of\s+kin\s*:?"
     r")\s*[:\-]?\s*",
     re.IGNORECASE,
 )
@@ -426,6 +460,14 @@ _ORG_OR_PLACE_KEYWORDS = {
     "HOUSE", "SHAHRA", "KARACHI", "LAHORE", "ISLAMABAD", "PAKISTAN",
     "BLOCK", "ROAD", "STREET", "PLAZA", "FLOOR", "SCHEDULE", "SECTOR",
     "HEAD", "OPERATIONS", "SETTLEMENT", "DEAR", "SIR", "MADAM", "REGARDS",
+    # Defensive additions for the broader SWIFT/KYC-form anchors added
+    # 2026-11-25: these are the label words of the NEXT field over, not
+    # part of a person's name, so if one ever appears leading or inside
+    # a captured candidate (e.g. an anchor's optional colon failing to
+    # consume before the next label starts), trim there rather than
+    # mistag it as part of the name.
+    "CUSTOMER", "ORDERING", "ORIGINATOR", "NOMINEE", "APPLICANT",
+    "HOLDER", "KIN", "JOINT", "BENEFICIARY",
 }
 
 
