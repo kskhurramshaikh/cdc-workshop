@@ -352,6 +352,21 @@ NAME_CANON = {
 # it's standard cheque-instrument language likely to appear in other
 # banks' templates CDC hasn't sent us yet.
 #
+# Extended 2026-11-25 after a post-deploy smoke test (run across the
+# anchor catalog plus plausible phrasing NOT in it) confirmed the
+# predicted generalization gap: any institutional phrase outside this
+# list still falls straight back to Layer 1's blind spot. Five more
+# anchors added from that test — "drawn on account of", "attn"/"attn:",
+# "account holder" (unlabelled variant of "account title"), "remitted
+# by", "signed by" — the last two had been getting through only
+# incidentally, via the Layer 1 model picking them up on short isolated
+# inputs; that's not reliable in a longer real document, so they're
+# promoted to deterministic anchors here too. This remains a blunt,
+# enumerable net, not a generalizing fix — any phrasing still outside
+# this list (or a name appearing *before* its label instead of after)
+# is exactly the class of failure the Layer 1 fine-tuning brief asks
+# for; see that brief for the scoped fine-tuning ask.
+#
 # Design: anchor on the label, then take the capitalised word-run right
 # after it as a NAME CANDIDATE, trimmed to the longest leading run of
 # words that contains no organisation/place keyword (so "AHMED MUHAMMAD
@@ -379,8 +394,13 @@ CONTEXT_ANCHOR_RE = re.compile(
     r"|CDC[\s-]*TRUSTE(?:E)?"
     r"|account\s+title\s*:?"
     r"|account\s+description\s*:?"
+    r"|account\s+holder\s*:?"
     r"|beneficiary(?:\s+name)?\s*:?"
     r"|customer\s+name\s*:?"
+    r"|drawn\s+on\s+account\s+of"
+    r"|attn\.?\s*:?"
+    r"|remitted\s+by"
+    r"|signed\s+by"
     r")\s*[:\-]?\s*",
     re.IGNORECASE,
 )
