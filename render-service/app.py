@@ -67,7 +67,22 @@ mcp = FastMCP(name="Sarhad Privacy Filter", auth=_auth)
 # _ensure_loaded()) — this is the expensive part and doubles as this
 # service's own "pre-warming": the first real tool call doesn't pay the
 # model-load cost. No ContextMap here by design — see module docstring.
-_model_backend = default_model_backend()
+#
+# min_score lowered from the library default (0.5) to 0.35 after the live
+# UC2 workshop run: short, extremely common two-token Pakistani names
+# (e.g. "Ahmed Muhammad") were scoring below 0.5 and passing through
+# unredacted, while longer/more distinctive names (e.g. "Ahmed Khan
+# Muhammad Awais") scored well above it and were caught correctly. This
+# is a blunt, global knob — it trades some additional false positives
+# for fewer missed short names, which is the safer failure direction for
+# a privacy filter (over-redaction is an inconvenience; under-redaction
+# is a leak). It does NOT fix the root cause (the model's confidence is
+# genuinely context-dependent for short/common-token names) — a
+# context-anchored Layer 2 fallback (matching short names next to known
+# document labels like signature lines) would be the more precise fix
+# and is worth adding once we have concrete examples of where these
+# names appear in the documents.
+_model_backend = default_model_backend(min_score=0.35)
 _detector = PrivacyFilter(model_backend=_model_backend)
 
 
@@ -88,8 +103,17 @@ def detect_pii(text: str) -> list[dict]:
 async def health(request: Request) -> JSONResponse:
     """Plain HTTP health check (outside the MCP protocol) for Render's
     own health-check probe — Render expects an ordinary GET that returns
-    2xx, not an MCP tool call."""
-    return JSONResponse({"status": "ok", "model_backend": type(_model_backend).__name__})
+    2xx, not an MCP tool call.
+
+    Deliberately returns a fixed, generic backend label rather than
+    `type(_model_backend).__name__` (the previous behaviour): the real
+    class name (`OpenAIPrivacyFilterBackend`) was leaking which
+    underlying open-weight model Sarhad wraps to anyone who simply called
+    this unauthenticated, public route — which is exactly what happened
+    during the live UC2 workshop. This endpoint's only job is "is the
+    process up", not "what's inside it".
+    """
+    return JSONResponse({"status": "ok", "model_backend": "Sarhad-Layer1"})
 
 
 if __name__ == "__main__":
