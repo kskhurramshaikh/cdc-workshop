@@ -36,13 +36,16 @@ customers.
 from __future__ import annotations
 
 import os
+import shutil
+import sys
+from pathlib import Path
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from cdc_privacy_filter import PrivacyFilter, default_model_backend
+from cdc_privacy_filter import NoOpModelBackend, PrivacyFilter, default_model_backend
 
 _API_KEY = os.environ.get("PRIVACY_FILTER_API_KEY")
 
@@ -82,7 +85,22 @@ mcp = FastMCP(name="Sarhad Privacy Filter", auth=_auth)
 # document labels like signature lines) would be the more precise fix
 # and is worth adding once we have concrete examples of where these
 # names appear in the documents.
-_model_backend = default_model_backend(min_score=0.35)
+#
+# CDC_DISABLE_PII_MODEL=1 skips loading Layer 1 here too (same flag,
+# same meaning as cdc-mcp-server's own local-mode switch) — useful for
+# smoke-testing this service's HTTP/MCP plumbing and the multi-worker
+# setup itself without paying the ~2.8GB model download/load cost, and
+# for local development. Layer 2 (regex) keeps working on its own
+# either way; never used as a production fallback for this service,
+# only ever set deliberately.
+if os.environ.get("CDC_DISABLE_PII_MODEL") == "1":
+    _model_backend = NoOpModelBackend()
+    print(
+        "[sarhad] CDC_DISABLE_PII_MODEL=1 — Layer 1 (model) skipped, regex-only.",
+        flush=True,
+    )
+else:
+    _model_backend = default_model_backend(min_score=0.35)
 _detector = PrivacyFilter(model_backend=_model_backend)
 
 
@@ -116,6 +134,46 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "model_backend": "Sarhad-Layer1"})
 
 
+# ASGI app for the multi-worker production path (gunicorn + uvicorn
+# workers, see gunicorn_conf.py and the __main__ block below). Built once
+# per process at import time, after the tool and the /health route are
+# registered above, so both are present on the app this returns. In
+# gunicorn's preload mode this whole module — including the model load
+# above — is imported exactly once in the master process before any
+# worker is forked; each forked worker then serves this same `app`
+# object (inherited via fork, not re-imported), sharing the loaded model
+# weights via copy-on-write rather than loading its own copy.
+app = mcp.http_app(path="/mcp")
+
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8000"))
-    mcp.run(transport="http", host="0.0.0.0", port=port, path="/mcp")
+    # Render's Start Command stays "python app.py" (see render.yaml) for
+    # both paths below — this process re-execs into gunicorn so the
+    # multi-worker/preload design takes effect with no dashboard change.
+    #
+    # Set SARHAD_SINGLE_PROCESS=1 to skip gunicorn and run the original
+    # single-process path directly instead — useful for quick local
+    # testing without gunicorn/uvicorn-worker installed, or to isolate
+    # whether a problem is in the app itself vs. the multi-worker setup.
+    if os.environ.get("SARHAD_SINGLE_PROCESS") == "1":
+        port = int(os.environ.get("PORT", "8000"))
+        mcp.run(transport="http", host="0.0.0.0", port=port, path="/mcp")
+    else:
+        gunicorn_conf = str(Path(__file__).resolve().parent / "gunicorn_conf.py")
+        # Resolve gunicorn explicitly rather than relying on a bare "gunicorn"
+        # lookup on $PATH: that fails whenever this script is invoked via a
+        # venv's python binary directly (python app.py) without the venv
+        # being "activated" first, since activation is what adds its bin/
+        # directory to $PATH. shutil.which() still finds it if $PATH is
+        # already correct (e.g. a normally-activated venv or a system
+        # install); the "-m gunicorn" fallback works unconditionally,
+        # because it imports gunicorn from whatever site-packages
+        # sys.executable itself resolves to, with no $PATH involved at all.
+        gunicorn_path = shutil.which("gunicorn")
+        if gunicorn_path:
+            os.execv(gunicorn_path, [gunicorn_path, "-c", gunicorn_conf, "app:app"])
+        else:
+            os.execv(
+                sys.executable,
+                [sys.executable, "-m", "gunicorn", "-c", gunicorn_conf, "app:app"],
+            )

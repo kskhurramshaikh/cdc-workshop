@@ -13,6 +13,12 @@ safetensors
 # aren't pinned separately here.
 fastmcp
 
+# Multi-worker production path (see gunicorn_conf.py + app.py's __main__
+# block). uvicorn-worker is a separate package as of recent uvicorn
+# releases, which dropped the old built-in uvicorn.workers.UvicornWorker.
+gunicorn
+uvicorn-worker
+
 # Local package (Layer 1 + Layer 2 filter logic). Render's build runs
 # from the repo root (see render.yaml rootDir), so this relative path
 # resolves to ../cdc-privacy-filter.

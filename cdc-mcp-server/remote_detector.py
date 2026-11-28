@@ -7,37 +7,58 @@ Layer 1 + Layer 2 detection in-process.
 Sarhad speaks the real MCP protocol (streamable HTTP), not a plain
 REST API, so this talks to it the same way any MCP client would.
 
-Design: ONE persistent connection, held open for the life of this
-process, serviced by a single background thread running its own
-asyncio event loop. detect_remote() (called from server.py's sync
-tool code, on a FastMCP worker thread) hands work to that background
-worker via a thread-safe queue and blocks on a concurrent.futures.Future
-for the result. fastmcp.Client's connection context must be entered
-and exited on the same asyncio task, so the connection is opened once
-inside one long-running worker coroutine on the background thread's
-own loop — never reopened per call.
+Design: a small POOL of persistent connections (default size 4, tune via
+SARHAD_CLIENT_CONCURRENCY), each held open for the life of this process
+and each serviced by its own background thread running its own asyncio
+event loop. detect_remote() picks a connection from the pool (round-
+robin) and hands work to that connection's background worker via a
+thread-safe queue, blocking on a concurrent.futures.Future for the
+result. fastmcp.Client's connection context must be entered and exited
+on the same asyncio task, so each pooled connection is opened once
+inside its own long-running worker coroutine on its own background
+thread's loop — never reopened per call.
 
-Why persistent instead of connect-per-call: a fresh MCP connection pays
-a real TLS + MCP-handshake cost. server.py often needs many detect_pii
-calls in a row (one per redactable field across many records, or one
-per chunk of a large document) — paying that handshake every single
-time turned calls that should individually take well under a second
-into minutes of cumulative wall-clock time. That connect-per-call cost,
-not the size of any one document or any one JSON file, was the actual
-cause of the extended get_accounts_detail/read_bank_statement delays.
+Why a pool instead of one connection: Sarhad's server side (render-
+service) now runs multiple worker processes (one per vCPU, see
+gunicorn_conf.py there) specifically so it can detect PII for several
+documents at once instead of one at a time. A single persistent
+connection here would still cap this *client* at one in-flight
+detect_pii call no matter how many workers the server has, because
+every call would funnel through the same one queue/connection in
+series. Round-robining across a small pool of connections lets this
+one client process have several documents' worth of detect_pii calls
+in flight concurrently, each landing on whichever server-side worker
+accepts that connection — turning "one document at a time" into
+"several documents at a time" end to end. Pool size should roughly
+match (or modestly exceed) the server's own worker count: more pooled
+connections than server workers mostly just queues on the server side
+instead of here, and fewer leaves server workers idle.
 
-Auto-recovery: if the connection drops (network blip, Render restart,
-DNS hiccup) the worker loop reconnects on its own and keeps serving the
-same queue — a request already enqueued when the drop happened still
-gets served once the new connection comes up, instead of the background
-worker silently dying and leaving every future call to hang until this
-whole process is restarted.
+Why persistent (each pooled connection) instead of connect-per-call: a
+fresh MCP connection pays a real TLS + MCP-handshake cost. server.py
+often needs many detect_pii calls in a row (one per redactable field
+across many records, or one per chunk of a large document) — paying
+that handshake every single time turned calls that should individually
+take well under a second into minutes of cumulative wall-clock time.
+That connect-per-call cost, not the size of any one document or any
+one JSON file, was the actual cause of the extended
+get_accounts_detail/read_bank_statement delays this pool design
+otherwise preserves the fix for.
+
+Auto-recovery: if a pooled connection drops (network blip, Render
+restart, DNS hiccup) that connection's own worker loop reconnects on
+its own and keeps serving its own queue — a request already enqueued
+on it when the drop happened still gets served once that connection
+comes back up, instead of silently dying and leaving every future call
+routed to it hanging. Other pooled connections are unaffected.
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import itertools
+import os
 import sys
 import threading
 
@@ -53,6 +74,12 @@ from cdc_privacy_filter.model_backend import Span
 _TIMEOUT_SECONDS = 90  # generous: a cold remote instance may still be loading the model
 _SUBMIT_TIMEOUT_SECONDS = _TIMEOUT_SECONDS + 30  # local safety net on top of the MCP call's own timeout
 _RECONNECT_DELAY_SECONDS = 2
+
+# How many pooled connections this client keeps open at once. Tune to
+# roughly match Sarhad's own WEB_CONCURRENCY (worker count) on the
+# server side — see the module docstring above for why.
+_DEFAULT_POOL_SIZE = 4
+_POOL_SIZE = max(1, int(os.environ.get("SARHAD_CLIENT_CONCURRENCY", _DEFAULT_POOL_SIZE)))
 
 
 class RemoteDetectionError(RuntimeError):
@@ -162,23 +189,46 @@ class _PersistentConnection:
         return fut.result(timeout=_SUBMIT_TIMEOUT_SECONDS)
 
 
-_connection: _PersistentConnection | None = None
-_connection_lock = threading.Lock()
+class _ConnectionPool:
+    """A small, fixed-size pool of _PersistentConnection, round-robined
+    across calls so this one client process can have several detect_pii
+    calls in flight at once — see the module docstring for why.
+
+    Round-robin (not least-busy) is deliberate: it's simple and
+    stateless to dispatch, and good enough as a first cut since
+    individual detect_pii calls are all roughly the same shape (one
+    document chunk). If real traffic shows some chunks taking much
+    longer than others (so round-robin leaves a slow connection's queue
+    backed up while others sit idle), a least-busy/queue-depth-aware
+    dispatch would be the next upgrade — not needed yet.
+    """
+
+    def __init__(self, base_url: str, api_key: str | None, size: int):
+        self._conns = [_PersistentConnection(base_url, api_key) for _ in range(size)]
+        self._counter = itertools.count()
+
+    def submit(self, text: str) -> list[Span]:
+        idx = next(self._counter) % len(self._conns)
+        return self._conns[idx].submit(text)
 
 
-def _get_connection(base_url: str, api_key: str | None) -> _PersistentConnection:
-    global _connection
-    if _connection is None:
-        with _connection_lock:
-            if _connection is None:
-                _connection = _PersistentConnection(base_url, api_key)
-    return _connection
+_pool: _ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool(base_url: str, api_key: str | None) -> _ConnectionPool:
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = _ConnectionPool(base_url, api_key, _POOL_SIZE)
+    return _pool
 
 
 def detect_remote(text: str, base_url: str, api_key: str | None) -> list[Span]:
-    conn = _get_connection(base_url, api_key)
+    pool = _get_pool(base_url, api_key)
     try:
-        return conn.submit(text)
+        return pool.submit(text)
     except McpError as exc:
         raise RemoteDetectionError(f"Sarhad returned an error: {exc!r}") from exc
     except Exception as exc:  # noqa: BLE001 — network/connection/timeout errors
